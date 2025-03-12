@@ -1,3 +1,4 @@
+// Code:messages/context/AuthContext.jsx
 import React, { createContext, useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
@@ -53,11 +54,15 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const logout = async () => {
+  const logout = async (navigation) => {
     setLoading(true);
     try {
-      await AsyncStorage.multiRemove(["token", "refresh"]); // ✅ Fixed
-      setUser(null);
+      await AsyncStorage.multiRemove(["token", "refresh"]); // ✅ Clear session data
+      setUser(null); // ✅ Reset user state
+      navigation.reset({ // ✅ Reset navigation to ensure user can't go back
+        index: 0,
+        routes: [{ name: "Login" }],
+      });
     } catch (error) {
       console.log("Logout error:", error);
       setError("Failed to log out.");
@@ -65,6 +70,8 @@ export const AuthProvider = ({ children }) => {
       setLoading(false);
     }
   };
+  
+  
 
   return (
     <AuthContext.Provider value={{ user, login, logout, loading, error }}>

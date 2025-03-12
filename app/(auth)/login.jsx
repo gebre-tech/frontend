@@ -1,3 +1,4 @@
+// Code: messages/app/auth/login.jsx
 import React, { useState, useContext } from "react";
 import { View, Text, TextInput, Button, StyleSheet, Alert, TouchableOpacity } from "react-native";
 import { AuthContext } from "../../context/AuthContext";

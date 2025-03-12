@@ -1,36 +1,37 @@
 import React, { useState, useContext } from 'react';
-import { View, Text, TextInput, Button, StyleSheet, Alert } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
 import axios from 'axios';
 import { AuthContext } from '../../context/AuthContext';
+import { useNavigation } from '@react-navigation/native';
 
 const AddContacts = () => {
   const { user } = useContext(AuthContext);
-  const [friendId, setFriendId] = useState('');
+  const navigation = useNavigation();
+  const [friendUsername, setFriendUsername] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleAddFriend = async () => {
-    if (!friendId.trim()) {
-      Alert.alert('Error', 'Please enter a valid user ID');
+    if (!friendUsername.trim()) {
+      Alert.alert('Error', 'Please enter a valid username');
       return;
     }
     setLoading(true);
     try {
       const response = await axios.post(
-        `http://your-backend-url/contacts/add/${friendId}/`,
-        {},
+        'http://127.0.0.1:8000/contacts/add/',
+        { username: friendUsername },
         {
-          headers: {
-            Authorization: `Bearer ${user.token}`,
-          },
+          headers: { Authorization: `Bearer ${user.token}` }, // Corrected token usage
         }
       );
       if (response.status === 201) {
         Alert.alert('Success', 'Friend added successfully');
-        setFriendId('');
+        setFriendUsername('');
+        navigation.navigate('Contacts'); 
       }
     } catch (error) {
-      console.error('Error adding friend:', error);
-      Alert.alert('Error', 'Could not add friend');
+      const errorMessage = error.response?.data?.error || 'Could not add friend';
+      Alert.alert('Error', errorMessage);
     } finally {
       setLoading(false);
     }
@@ -41,16 +42,14 @@ const AddContacts = () => {
       <Text style={styles.title}>Add Contact</Text>
       <TextInput
         style={styles.input}
-        placeholder="Enter Friend's User ID"
-        value={friendId}
-        onChangeText={setFriendId}
-        keyboardType="numeric"
+        placeholder="Enter Friend's Username"
+        value={friendUsername}
+        onChangeText={setFriendUsername}
+        autoCapitalize="none"
       />
-      <Button
-        title={loading ? 'Adding...' : 'Add Friend'}
-        onPress={handleAddFriend}
-        disabled={loading}
-      />
+      <TouchableOpacity style={styles.button} onPress={handleAddFriend} disabled={loading}>
+        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Add Friend</Text>}
+      </TouchableOpacity>
     </View>
   );
 };
@@ -74,6 +73,18 @@ const styles = StyleSheet.create({
     borderColor: '#ccc',
     marginBottom: 20,
     borderRadius: 5,
+  },
+  button: {
+    backgroundColor: '#007bff',
+    padding: 10,
+    borderRadius: 5,
+    width: '100%',
+    alignItems: 'center',
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
   },
 });
 

@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState ,useContext,} from 'react';
 import { 
   View, Text, Image, StyleSheet, TouchableOpacity, TextInput, 
   ActivityIndicator, Alert 
 } from 'react-native';
+import { AuthContext } from '../../context/AuthContext';
 import { createDrawerNavigator, DrawerContentScrollView, DrawerItemList } from '@react-navigation/drawer';
 import { createMaterialTopTabNavigator } from '@react-navigation/material-top-tabs';
 import { createStackNavigator } from '@react-navigation/stack';
@@ -23,7 +24,6 @@ import LogoutScreen from '../(auth)/logout';
 const Drawer = createDrawerNavigator();
 const Tab = createMaterialTopTabNavigator();
 const Stack = createStackNavigator();
-
 // Chat Stack Navigator
 const ChatStack = () => (
   <Stack.Navigator>
@@ -52,18 +52,18 @@ function TopTabs() {
 
 // Custom Drawer Content
 function CustomDrawerContent(props) {
-  const navigation = useNavigation();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [profileImage, setProfileImage] = useState('https://via.placeholder.com/90');
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-
+  const { logout } = useContext(AuthContext);
+  const navigation=useNavigation();;
   useEffect(() => {
     const loadUserData = async () => {
       try {
-        const storedName = await AsyncStorage.getItem('name');
+        const storedName = await AsyncStorage.getItem('username');
         const storedEmail = await AsyncStorage.getItem('email');
         const storedImage = await AsyncStorage.getItem('profileImage');
 
@@ -125,27 +125,27 @@ function CustomDrawerContent(props) {
     }
   };
 
-  const handleLogout = async () => {
+  const handleLogout = () => {
     Alert.alert(
       "Logout",
       "Are you sure you want to log out?",
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Yes, Logout",
+          text: "Yes",
           onPress: async () => {
-            try {
-              await AsyncStorage.clear();
-              navigation.reset({ index: 0, routes: [{ name: "LogoutScreen" }] });
-            } catch (error) {
-              Alert.alert("Logout Failed", "Something went wrong.");
+            const success = await logout();
+            if (success) {
+              navigation.reset({
+                index: 0,
+                routes: [{ name: "Login" }],
+              });
             }
           },
         },
       ]
     );
   };
-
   return (
     <DrawerContentScrollView {...props}>
       <View style={styles.profileContainer}>
@@ -190,6 +190,7 @@ export default function Home() {
       <Drawer.Screen name="Home" component={TopTabs} />
       <Drawer.Screen name="Add Contacts" component={AddContacts} />
       <Drawer.Screen name="Create New Group" component={CreateGroupScreen} />
+      <Drawer.Screen name="Logout" component={LogoutScreen} />
     </Drawer.Navigator>
   );
 }

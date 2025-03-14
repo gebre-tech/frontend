@@ -1,19 +1,24 @@
-import React, { useEffect } from 'react';
-import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useNavigation } from '@react-navigation/native';
+import React, { useContext, useEffect } from "react";
+import { View, Text, ActivityIndicator, StyleSheet } from "react-native";
+import { AuthContext } from "../../context/AuthContext";
+import { useNavigation } from "@react-navigation/native";
 
 const LogoutScreen = () => {
+  const { logout } = useContext(AuthContext);
   const navigation = useNavigation();
 
   useEffect(() => {
     const performLogout = async () => {
-      await AsyncStorage.clear(); // ✅ Clear all stored data
-      navigation.reset({ index: 0, routes: [{ name: "Login" }] }); // ✅ Navigate to Login
+      const success = await logout();
+      if (success) {
+        navigation.reset({
+          index: 0,
+          routes: [{ name: "Login" }],
+        });
+      }
     };
-
     performLogout();
-  }, []);
+  }, [logout, navigation]);
 
   return (
     <View style={styles.container}>
@@ -32,7 +37,8 @@ const styles = StyleSheet.create({
   },
   text: {
     fontSize: 18,
-    marginBottom: 10,
+    marginBottom: 20,
+    color: "#333",
   },
 });
 

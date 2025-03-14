@@ -1,10 +1,9 @@
-import React, { useState, useEffect, useContext, useRef } from "react";
-import { View, Text, TextInput, Button, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
-import AuthContext from "../../context/AuthContext";
+import React, { useState, useEffect, useRef } from "react";
+import { View, FlatList, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
 import { useLocalSearchParams } from "expo-router";
-import WebSocket from 'ws';
-
-//ws.current = new WebSocket(`wss://your-backend-url/ws/chat/${chatId}/`);
+import { AuthContext } from "../../context/AuthContext"; // Fixed import
+import { Ionicons } from "@expo/vector-icons";
+import axios from "axios";
 
 const ChatScreen = () => {
   const { chatId } = useLocalSearchParams();
@@ -22,59 +21,36 @@ const ChatScreen = () => {
 
   const fetchMessages = async () => {
     try {
-      const res = await fetch(`http://your-backend-url/chat/${chatId}/messages/`, {
+      const res = await axios.get(`http://127.0.0.1:8000/chat/${chatId}/messages/`, {
         headers: { Authorization: `Bearer ${user.token}` },
       });
-      if (!res.ok) throw new Error('Network response was not ok');
-      const data = await res.json();
-      setMessages(data);
+      setMessages(res.data);
     } catch (error) {
-      console.log("Error fetching messages:", error);
-      alert("Failed to fetch messages. Please try again.");
+      console.error("Fetch messages error:", error);
     } finally {
       setLoading(false);
     }
   };
-  
 
   const connectWebSocket = () => {
-    ws.current = new WebSocket(`ws://your-backend-url/ws/chat/${chatId}/`);
-    ws.current.onopen = () => {
-      console.log("WebSocket connected");
+    ws.current = new WebSocket(`ws://127.0.0.1:8000/ws/chat/${chatId}/?token=${user.token}`);
+    ws.current.onopen = () => console.log("WebSocket connected");
+    ws.current.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      setMessages((prev) => [...prev, data]);
     };
-    ws.current.onmessage = (event) => {
-      const newMessage = JSON.parse(event.data);
-      setMessages((prev) => [
-        ...prev,
-        { id: newMessage.message_id, content: newMessage.content, sender: newMessage.sender, seen: newMessage.seen },
-      ]);
-    };
-    ws.current.onerror = (error) => {
-      console.error("WebSocket error:", error);
-    };
-    ws.current.onclose = () => {
-      console.log("WebSocket disconnected");
-    };
+    ws.current.onerror = (e) => console.error("WebSocket error:", e);
+    ws.current.onclose = () => console.log("WebSocket closed");
   };
 
   const sendMessage = () => {
-    if (message.trim() !== "") {
-      ws.current.send(JSON.stringify({ message, sender: user.id }));
+    if (message.trim() && ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({ content: message, sender: user.id }));
       setMessage("");
     }
   };
 
-  const markAsSeen = (messageId) => {
-    ws.current.send(JSON.stringify({ seen: true, message_id: messageId }));
-  };
-
-  if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#0000ff" />
-      </View>
-    );
-  }
+  if (loading) return <ActivityIndicator size="large" color="#007AFF" />;
 
   return (
     <View style={styles.container}>
@@ -82,36 +58,34 @@ const ChatScreen = () => {
         data={messages}
         keyExtractor={(item) => item.id.toString()}
         renderItem={({ item }) => (
-          <TouchableOpacity
-            onPress={() => markAsSeen(item.id)}
-            style={item.sender === user.id ? styles.sentMessage : styles.receivedMessage}
-          >
+          <View style={item.sender === user.id ? styles.sent : styles.received}>
             <Text>{item.content}</Text>
-            <Text style={styles.seenStatus}>{item.seen ? "✅ Seen" : "✔ Sent"}</Text>
-          </TouchableOpacity>
+            <Text style={styles.seen}>{item.seen ? "✓✓" : "✓"}</Text>
+          </View>
         )}
       />
       <View style={styles.inputContainer}>
         <TextInput
           style={styles.input}
-          placeholder="Type a message..."
           value={message}
           onChangeText={setMessage}
+          placeholder="Type a message..."
         />
-        <Button title="Send" onPress={sendMessage} />
+        <TouchableOpacity onPress={sendMessage}>
+          <Ionicons name="send" size={24} color="#007AFF" />
+        </TouchableOpacity>
       </View>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 10, backgroundColor: "#fff" },
-  sentMessage: { alignSelf: "flex-end", backgroundColor: "#DCF8C6", padding: 10, margin: 5, borderRadius: 10 },
-  receivedMessage: { alignSelf: "flex-start", backgroundColor: "#ECECEC", padding: 10, margin: 5, borderRadius: 10 },
-  inputContainer: { flexDirection: "row", padding: 10, borderTopWidth: 1, borderTopColor: "#ddd" },
-  input: { flex: 1, borderWidth: 1, borderColor: "#ddd", padding: 10, borderRadius: 5 },
-  seenStatus: { fontSize: 12, color: "gray", marginTop: 5 },
-  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
+  container: { flex: 1, backgroundColor: "#fff" },
+  sent: { alignSelf: "flex-end", backgroundColor: "#DCF8C6", padding: 10, margin: 5, borderRadius: 8 },
+  received: { alignSelf: "flex-start", backgroundColor: "#ECECEC", padding: 10, margin: 5, borderRadius: 8 },
+  inputContainer: { flexDirection: "row", padding: 10, alignItems: "center" },
+  input: { flex: 1, padding: 10, backgroundColor: "#f0f0f0", borderRadius: 20, marginRight: 10 },
+  seen: { fontSize: 12, color: "#666" },
 });
 
 export default ChatScreen;

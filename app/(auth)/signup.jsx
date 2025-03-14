@@ -14,18 +14,19 @@ const Signup = ({ navigation }) => {
       Alert.alert("Please fill in all fields.");
       return;
     }
-
+  
     setLoading(true);
     setError("");
-
+  
     try {
       await axios.post("http://127.0.0.1:8000/auth/register/", {
         email,
         username,
         password,
       });
+  
       Alert.alert("Signup successful!", "You can now log in.", [
-        { text: "OK", onPress: () => navigation.navigate("Login") },
+        { text: "OK", onPress: () => navigation.replace("Login") }, // Use replace to avoid going back to Signup
       ]);
     } catch (error) {
       console.log("Signup error:", error);
@@ -35,7 +36,7 @@ const Signup = ({ navigation }) => {
       setLoading(false);
     }
   };
-
+  
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Sign Up</Text>

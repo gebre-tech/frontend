@@ -19,7 +19,7 @@ const Signup = ({ navigation }) => {
     setError("");
 
     try {
-      await axios.post("http://127.0.0.1:8000/auth/register/", {
+      await axios.post("http://192.168.137.1:8000/auth/register/", {
         email,
         username,
         password,

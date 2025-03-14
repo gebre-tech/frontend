@@ -1,24 +1,20 @@
-import React, { useEffect } from 'react';
+import React, { useContext, useEffect } from 'react';
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AuthContext } from '../../context/AuthContext';
 import { useNavigation } from '@react-navigation/native';
 
 const LogoutScreen = () => {
+  const { logout } = useContext(AuthContext);
   const navigation = useNavigation();
 
   useEffect(() => {
-    const performLogout = async () => {
-      await AsyncStorage.clear(); // ✅ Clear all stored data
-      navigation.reset({ index: 0, routes: [{ name: "Login" }] }); // ✅ Navigate to Login
-    };
-
-    performLogout();
+    logout(navigation);
   }, []);
 
   return (
     <View style={styles.container}>
-      <Text style={styles.text}>Logging Out...</Text>
-      <ActivityIndicator size="large" color="#1a73e8" />
+      <ActivityIndicator size="large" color="#0000ff" />
+      <Text style={styles.text}>Logging out...</Text>
     </View>
   );
 };
@@ -26,13 +22,13 @@ const LogoutScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#fff",
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   text: {
-    fontSize: 18,
-    marginBottom: 10,
+    marginTop: 10,
+    fontSize: 16,
+    color: '#000',
   },
 });
 

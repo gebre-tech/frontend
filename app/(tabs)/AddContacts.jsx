@@ -21,7 +21,10 @@ const AddContacts = () => {
         'http://127.0.0.1:8000/contacts/add/',
         { username: friendUsername },
         {
-          headers: { Authorization: `Bearer ${user.token}` }, // Corrected token usage
+          headers: {
+            Authorization: `Bearer ${user.token}`, // Add the token
+            'Content-Type': 'application/json', // Specify the content type
+          },
         }
       );
       if (response.status === 201) {

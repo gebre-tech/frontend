@@ -3,18 +3,17 @@ import React, { useState, useContext } from "react";
 import { View, Text, TextInput, Button, StyleSheet, Alert, TouchableOpacity } from "react-native";
 import { AuthContext } from "../../context/AuthContext";
 
-
 const Login = ({ navigation }) => {
   const { login, loading, error } = useContext(AuthContext);
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
 
   const handleLogin = () => {
-    if (!email || !password) {
-      Alert.alert("Please enter both email and password.");
+    if (!username || !password) {
+      Alert.alert("Please enter both username and password.");
       return;
     }
-    login(email, password);
+    login(username, password);
   };
 
   return (
@@ -23,10 +22,9 @@ const Login = ({ navigation }) => {
       {error && <Text style={styles.error}>{error}</Text>}
       <TextInput
         style={styles.input}
-        placeholder="Email"
-        value={email}
-        onChangeText={setEmail}
-        keyboardType="email-address"
+        placeholder="Username"
+        value={username}
+        onChangeText={setUsername}
         autoCapitalize="none"
       />
       <TextInput

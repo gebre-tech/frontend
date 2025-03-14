@@ -1,9 +1,8 @@
-// Code:messages/context/AuthContext.jsx
 import React, { createContext, useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
 
-const API_URL = "http://127.0.0.1:8000"; // Replace with actual machine IP
+const API_URL = "http://192.168.137.1:8000"; // Replace with your local IP address
 
 const AuthContext = createContext();
 
@@ -22,7 +21,7 @@ export const AuthProvider = ({ children }) => {
       if (!token) return;
 
       const res = await axios.get(`${API_URL}/auth/profile/`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Token ${token}` },
       });
 
       setUser(res.data);
@@ -43,8 +42,7 @@ export const AuthProvider = ({ children }) => {
         password,
       });
 
-      await AsyncStorage.setItem("token", res.data.access);
-      await AsyncStorage.setItem("refresh", res.data.refresh);
+      await AsyncStorage.setItem("token", res.data.token);
       setUser(res.data.user); // Ensure Django returns user details
     } catch (error) {
       console.log("Login error:", error);
@@ -57,9 +55,9 @@ export const AuthProvider = ({ children }) => {
   const logout = async (navigation) => {
     setLoading(true);
     try {
-      await AsyncStorage.multiRemove(["token", "refresh"]); // ✅ Clear session data
-      setUser(null); // ✅ Reset user state
-      navigation.reset({ // ✅ Reset navigation to ensure user can't go back
+      await AsyncStorage.removeItem("token"); // Clear session data
+      setUser(null); // Reset user state
+      navigation.reset({ // Reset navigation to ensure user can't go back
         index: 0,
         routes: [{ name: "Login" }],
       });
@@ -70,8 +68,6 @@ export const AuthProvider = ({ children }) => {
       setLoading(false);
     }
   };
-  
-  
 
   return (
     <AuthContext.Provider value={{ user, login, logout, loading, error }}>

@@ -4,9 +4,11 @@ import axios from 'axios';
 import { useNavigation } from '@react-navigation/native';
 import { AuthContext } from '../../context/AuthContext';
 import { Ionicons } from '@expo/vector-icons'; // ✅ Import Icons
+import AsyncStorage from '@react-native-async-storage/async-storage'; // Ensure AsyncStorage is imported
 
 const Contacts = () => {
   const [contacts, setContacts] = useState([]);
+  const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState('');
   const navigation = useNavigation();
@@ -18,8 +20,12 @@ const Contacts = () => {
 
   const fetchContacts = async () => {
     try {
+      const token = await AsyncStorage.getItem("access");
+      if (!token) {
+        throw new Error('No token found');
+      }
       const response = await axios.get(`http://127.0.0.1:8000/contacts/list/`, {
-        headers: { Authorization: `Bearer ${user?.token}` },
+        headers: { Authorization: `Bearer ${token}` },
       });
       setContacts(response.data);
     } catch (error) {
@@ -27,6 +33,58 @@ const Contacts = () => {
       Alert.alert('Error', 'Could not fetch contacts');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const searchUsers = async (query) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    try {
+      const token = await AsyncStorage.getItem("access");
+      if (!token) {
+        throw new Error('No token found');
+      }
+      const response = await axios.get(`http://127.0.0.1:8000/contacts/search_users/`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { query },
+      });
+      setSearchResults(response.data);
+    } catch (error) {
+      console.error('Error searching users:', error);
+      Alert.alert('Error', 'Could not search users');
+    }
+  };
+
+  const handleSearchChange = (text) => {
+    setSearchText(text);
+    searchUsers(text);
+  };
+
+  const handleAddFriend = async (username) => {
+    try {
+      const token = await AsyncStorage.getItem("access");
+      if (!token) {
+        throw new Error('No token found');
+      }
+      const response = await axios.post(
+        'http://127.0.0.1:8000/contacts/add/',
+        { username },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      if (response.status === 201) {
+        Alert.alert('Success', 'Friend added successfully');
+        fetchContacts(); // Refresh contacts list
+      }
+    } catch (error) {
+      const errorMessage = error.response?.data?.error || 'Could not add friend';
+      Alert.alert('Error', errorMessage);
     }
   };
 
@@ -45,16 +103,32 @@ const Contacts = () => {
     </TouchableOpacity>
   );
 
+  const renderSearchItem = ({ item }) => (
+    <TouchableOpacity 
+      style={styles.contactItem}
+      onPress={() => handleAddFriend(item.username)}
+    >
+      <Ionicons name="person-add-outline" size={40} color="black" />  {/* ✅ Add user icon */}
+      <Text style={styles.contactName}>{item.username}</Text>
+    </TouchableOpacity>
+  );
+
   return (
     <View style={styles.container}>
       <TextInput
         style={styles.searchInput}
         placeholder="Search contacts..."
         value={searchText}
-        onChangeText={setSearchText}
+        onChangeText={handleSearchChange}
       />
       {loading ? (
         <ActivityIndicator size="large" color="#0000ff" />
+      ) : searchText ? (
+        <FlatList
+          data={searchResults}
+          renderItem={renderSearchItem}
+          keyExtractor={(item) => item.id.toString()}
+        />
       ) : filteredContacts.length === 0 ? (
         <Text style={styles.noContactsText}>No contacts available</Text>
       ) : (

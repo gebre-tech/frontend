@@ -19,7 +19,7 @@ export const ThemeProvider = ({ children }) => {
     <ThemeContext.Provider value={{ darkMode, toggleDarkMode }}>
       {children}
     </ThemeContext.Provider>
-  );
+  );r
 };
 
 export default ThemeContext; // Ensure correct export

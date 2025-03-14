@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, TextInput, StyleSheet, Alert } from 'react-native';
 import axios from 'axios';
+import AsyncStorage from "@react-native-async-storage/async-storage"; // ✅ Import AsyncStorage
 import { useNavigation } from '@react-navigation/native';
 import { AuthContext } from '../../context/AuthContext';
-import { Ionicons } from '@expo/vector-icons'; // ✅ Import Icons
-import AsyncStorage from '@react-native-async-storage/async-storage'; // Ensure AsyncStorage is imported
+import { Ionicons } from '@expo/vector-icons';
 
 const Contacts = () => {
   const [contacts, setContacts] = useState([]);
-  const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState('');
   const navigation = useNavigation();
@@ -20,71 +19,20 @@ const Contacts = () => {
 
   const fetchContacts = async () => {
     try {
-      const token = await AsyncStorage.getItem("access");
+      const token = await AsyncStorage.getItem("token"); // ✅ Fetch token from AsyncStorage
       if (!token) {
-        throw new Error('No token found');
+        throw new Error("No authentication token found");
       }
+
       const response = await axios.get(`http://127.0.0.1:8000/contacts/list/`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Token ${token}` }, // Use fetched token
       });
       setContacts(response.data);
     } catch (error) {
       console.error('Error fetching contacts:', error);
-      Alert.alert('Error', 'Could not fetch contacts');
+      Alert.alert('Error', error.message || 'Could not fetch contacts');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const searchUsers = async (query) => {
-    if (!query.trim()) {
-      setSearchResults([]);
-      return;
-    }
-    try {
-      const token = await AsyncStorage.getItem("access");
-      if (!token) {
-        throw new Error('No token found');
-      }
-      const response = await axios.get(`http://127.0.0.1:8000/contacts/search_users/`, {
-        headers: { Authorization: `Bearer ${token}` },
-        params: { query },
-      });
-      setSearchResults(response.data);
-    } catch (error) {
-      console.error('Error searching users:', error);
-      Alert.alert('Error', 'Could not search users');
-    }
-  };
-
-  const handleSearchChange = (text) => {
-    setSearchText(text);
-    searchUsers(text);
-  };
-
-  const handleAddFriend = async (username) => {
-    try {
-      const token = await AsyncStorage.getItem("access");
-      if (!token) {
-        throw new Error('No token found');
-      }
-      const response = await axios.post(
-        'http://127.0.0.1:8000/contacts/add/',
-        { username },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        }
-      );
-      if (response.status === 201) {
-        Alert.alert('Success', 'Friend added successfully');
-        fetchContacts(); // Refresh contacts list
-      }
-    } catch (error) {
-      const errorMessage = error.response?.data?.error || 'Could not add friend';
-      Alert.alert('Error', errorMessage);
     }
   };
 
@@ -97,19 +45,9 @@ const Contacts = () => {
       style={styles.contactItem}
       onPress={() => navigation.navigate('Chat', { chatId: item.friend_id })}
     >
-      <Ionicons name="person-circle-outline" size={40} color="black" />  {/* ✅ User icon */}
+      <Ionicons name="person-circle-outline" size={40} color="black" />
       <Text style={styles.contactName}>{item.friend.username}</Text>
-      <Ionicons name="chatbubble-outline" size={24} color="#007bff" />  {/* ✅ Chat icon */}
-    </TouchableOpacity>
-  );
-
-  const renderSearchItem = ({ item }) => (
-    <TouchableOpacity 
-      style={styles.contactItem}
-      onPress={() => handleAddFriend(item.username)}
-    >
-      <Ionicons name="person-add-outline" size={40} color="black" />  {/* ✅ Add user icon */}
-      <Text style={styles.contactName}>{item.username}</Text>
+      <Ionicons name="chatbubble-outline" size={24} color="#007bff" />
     </TouchableOpacity>
   );
 
@@ -119,16 +57,10 @@ const Contacts = () => {
         style={styles.searchInput}
         placeholder="Search contacts..."
         value={searchText}
-        onChangeText={handleSearchChange}
+        onChangeText={setSearchText}
       />
       {loading ? (
         <ActivityIndicator size="large" color="#0000ff" />
-      ) : searchText ? (
-        <FlatList
-          data={searchResults}
-          renderItem={renderSearchItem}
-          keyExtractor={(item) => item.id.toString()}
-        />
       ) : filteredContacts.length === 0 ? (
         <Text style={styles.noContactsText}>No contacts available</Text>
       ) : (
@@ -162,7 +94,7 @@ const styles = StyleSheet.create({
   contactName: {
     fontSize: 16,
     fontWeight: 'bold',
-    flex: 1, // ✅ Ensures name takes available space
+    flex: 1,
     marginLeft: 10,
   },
   noContactsText: { textAlign: 'center', marginTop: 20, fontSize: 16, color: 'gray' },

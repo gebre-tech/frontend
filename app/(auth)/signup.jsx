@@ -14,28 +14,31 @@ const Signup = ({ navigation }) => {
       Alert.alert("Please fill in all fields.");
       return;
     }
-
+  
     setLoading(true);
     setError("");
-
+  
     try {
-      await axios.post("http://192.168.137.1:8000/auth/register/", {
+      const response = await axios.post("http://127.0.0.1:8000/auth/register/", {
         email,
         username,
         password,
       });
-      Alert.alert("Signup successful!", "You can now log in.", [
-        { text: "OK", onPress: () => navigation.navigate("Login") },
-      ]);
+
+      if (response.status === 201) {
+        Alert.alert("Success", "Account created! Please log in.");
+        navigation.navigate("Login");
+      }
     } catch (error) {
       console.log("Signup error:", error);
-      setError("Signup failed. Please try again.");
-      Alert.alert("Signup failed", "Please try again.");
+      const errorMessage = error.response?.data?.detail || "Signup failed. Please try again.";
+      setError(errorMessage);
+      Alert.alert("Signup failed", errorMessage);
     } finally {
       setLoading(false);
     }
   };
-
+  
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Sign Up</Text>

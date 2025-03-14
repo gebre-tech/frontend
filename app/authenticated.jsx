@@ -1,11 +1,11 @@
-import React, { useContext, useEffect } from 'react';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { AuthContext } from '../context/AuthContext';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import Login from './(auth)/login';
-import Home from './(tabs)/home';
-import Signup from './(auth)/signup';
-import { useNavigation } from '@react-navigation/native';
+import React, { useContext, useEffect } from "react";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { AuthContext } from "../context/AuthContext";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useNavigation } from "@react-navigation/native";
+import Login from "./(auth)/login";
+import Home from "./(tabs)/home";
+import Signup from "./(auth)/signup";
 
 const Stack = createNativeStackNavigator();
 
@@ -14,25 +14,24 @@ const Authenticated = () => {
   const navigation = useNavigation();
 
   useEffect(() => {
-    const checkAuth = async () => {
-      const token = await AsyncStorage.getItem('token');
-      if (token) {
-        navigation.reset({
-          index: 0,
-          routes: [{ name: 'Home' }],
-        });
-      } else {
-        navigation.reset({
-          index: 0,
-          routes: [{ name: 'Login' }],
-        });
+    const checkAuthStatus = async () => {
+      const token = await AsyncStorage.getItem("token");
+      if (!loading) {
+        if (token && user) {
+          navigation.reset({
+            index: 0,
+            routes: [{ name: "Home" }],
+          });
+        } else {
+          navigation.reset({
+            index: 0,
+            routes: [{ name: "Login" }],
+          });
+        }
       }
     };
-
-    if (!loading) {
-      checkAuth();
-    }
-  }, [loading, navigation]);
+    checkAuthStatus();
+  }, [user, loading, navigation]);
 
   if (loading) return null;
 

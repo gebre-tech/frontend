@@ -1,18 +1,13 @@
+// src/screens/AddContacts.jsx
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  Alert,
-  ActivityIndicator,
-} from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, FlatList } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import debounce from 'lodash.debounce';
+
+const API_URL = "http://127.0.0.1:8000";
 
 const AddContacts = () => {
   const navigation = useNavigation();
@@ -22,6 +17,7 @@ const AddContacts = () => {
   const [status, setStatus] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [isFocused, setIsFocused] = useState(false);
+  const [ws, setWs] = useState(null);
   const inputRef = useRef(null);
 
   const resetForm = useCallback(() => {
@@ -56,15 +52,12 @@ const AddContacts = () => {
           navigation.navigate('Login');
           return;
         }
-
-        const response = await axios.get('http://127.0.0.1:8000/contacts/search/users/', {
+        const response = await axios.get(`${API_URL}/contacts/search/users/`, {
           headers: { Authorization: `Bearer ${token}` },
           params: { query },
         });
-        console.log('Suggestions response:', response.data);
-        setSuggestions(response.data.results || response.data);
+        setSuggestions(response.data.results || []);
       } catch (err) {
-        console.error('Fetch suggestions error:', err.message, err.response);
         setError(err.response?.status === 401 ? 'Session expired. Please log in again.' : 'Failed to load suggestions');
         if (err.response?.status === 401) navigation.navigate('Login');
       }
@@ -72,96 +65,75 @@ const AddContacts = () => {
     [navigation]
   );
 
-  const handleAddFriend = async (username = friendUsername) => {
-    console.log('Attempting to add friend:', username);
+  const setupWebSocket = useCallback(async () => {
+    const token = await AsyncStorage.getItem('token');
+    if (!token) return;
+
+    const websocket = new WebSocket(`ws://127.0.0.1:8000/ws/contacts/?token=${token}`);
+
+    websocket.onopen = () => console.log('WebSocket connected for AddContacts');
+    websocket.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.type === 'friend_request_sent') {
+        Alert.alert('Success', `Contact/Friend request sent to ${data.request.receiver.username}!`, [
+          { text: 'OK', onPress: () => navigation.navigate('Home') }
+        ]);
+      } else if (data.type === 'friend_request_accepted') {
+        Alert.alert('Notification', 'Your friend request was accepted!');
+        navigation.navigate('Contacts', { refresh: true });
+      } else if (data.type === 'friend_request_rejected') {
+        Alert.alert('Notification', 'Your friend request was rejected.');
+      }
+    };
+    websocket.onerror = (e) => console.error('WebSocket error:', e);
+    websocket.onclose = () => console.log('WebSocket disconnected');
+
+    setWs(websocket);
+    return () => websocket.close();
+  }, [navigation]);
+
+  const handleSendFriendRequest = async (username = friendUsername) => {
     setLoading(true);
-    setStatus('');
     setError('');
-    setSuggestions([]);
+    setStatus('');
     try {
       const token = await AsyncStorage.getItem('token');
-      console.log('Token:', token);
-      if (!token) {
-        throw new Error('No authentication token found. Please log in again.');
-      }
-  
-      console.log('Sending POST request to /contacts/add/ with:', { username });
-      const response = await axios.post(
-        'http://127.0.0.1:8000/contacts/add/',
+      await axios.post(
+        `${API_URL}/contacts/request/`,
         { username },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        }
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
-  
-      console.log('Add friend response:', response.status, response.data);
-  
-      if (response.status === 201) {
-        const friendData = response.data.friend || { username };
-        setStatus(`Successfully added ${friendData.username} as a friend!`);
-        console.log('Navigating to Contacts with refresh');
-        resetForm();
-        navigation.navigate('Contacts', { refresh: true });
-      } else {
-        throw new Error(`Unexpected response status: ${response.status}`);
+      resetForm();
+      if (ws) {
+        ws.send(JSON.stringify({ type: 'friend_request', username }));
       }
     } catch (error) {
-      console.error('Add friend error:', error.message, error.response?.data, error.code);
-      const errorMessage =
-        error.response?.status === 500
-          ? `Server error: ${error.response.data.error || 'Unknown issue'}`
-          : error.code === 'ECONNREFUSED'
-          ? 'Cannot connect to the server. Please ensure it’s running.'
-          : error.response?.status === 401
-          ? 'Session expired. Please log in again.'
-          : error.response?.status === 404
-          ? `User "${username}" not found.`
-          : error.response?.status === 400
-          ? error.response.data.error || 'Could not add friend.'
-          : error.message || 'Failed to add friend.';
-      setError(errorMessage);
-      Alert.alert('Error', errorMessage, [{ text: 'OK' }]);
-      if (error.response?.status === 401) navigation.navigate('Login');
+      const message = error.response?.data?.error || 'Failed to send friend request';
+      setError(message);
+      Alert.alert('Error', message);
     } finally {
       setLoading(false);
     }
   };
-  
-  const addFriendAndNavigate = (username = friendUsername) => {
-    console.log('Adding friend and navigating for:', username);
-    if (!username.trim() || error) {
-      setError(error || 'Please enter a valid username');
-      Alert.alert('Error', error || 'Please enter a valid username');
-      return;
-    }
-    handleAddFriend(username); // Directly call handleAddFriend
-  };
 
-  const handleSuggestionSelect = (username) => {
-    console.log('Suggestion selected:', username);
-    setFriendUsername(username);
-    setSuggestions([]);
-    inputRef.current?.blur();
-    addFriendAndNavigate(username); // Auto-add and navigate
-  };
+  useEffect(() => {
+    setupWebSocket();
+    inputRef.current?.focus();
+  }, [setupWebSocket]);
 
   const renderSuggestion = (item) => (
     <TouchableOpacity
       style={styles.suggestionItem}
-      onPress={() => handleSuggestionSelect(item.username)}
+      onPress={() => {
+        setFriendUsername(item.username);
+        setSuggestions([]);
+        handleSendFriendRequest(item.username);
+      }}
     >
       <Ionicons name="person-outline" size={20} color="#666" />
       <Text style={styles.suggestionText}>{item.username}</Text>
     </TouchableOpacity>
   );
-
-  useEffect(() => {
-    inputRef.current?.focus();
-    AsyncStorage.getItem('token').then((token) => console.log('Initial token:', token));
-  }, []);
 
   return (
     <View style={styles.outerContainer}>
@@ -184,36 +156,28 @@ const AddContacts = () => {
               editable={!loading}
             />
           </View>
-          {suggestions.length > 0 && !error ? (
+          {suggestions.length > 0 && !error && (
             <View style={styles.suggestionsContainer}>
-              {suggestions.slice(0, 5).map((item, index) => (
-                <View key={item.id || index}>{renderSuggestion(item)}</View>
-              ))}
+              {suggestions.slice(0, 5).map((item) => renderSuggestion(item))}
             </View>
-          ) : null}
+          )}
         </View>
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        {status ? <Text style={styles.statusText}>{status}</Text> : null}
+        {error && <Text style={styles.errorText}>{error}</Text>}
+        {status && <Text style={styles.statusText}>{status}</Text>}
         <View style={styles.buttonContainer}>
           <TouchableOpacity
             style={[styles.button, styles.cancelButton]}
             onPress={() => navigation.goBack()}
             disabled={loading}
-            activeOpacity={0.7}
           >
             <Text style={styles.buttonText}>Cancel</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.button, loading || error ? styles.buttonDisabled : styles.addButton]}
-            onPress={() => addFriendAndNavigate()}
+            onPress={() => handleSendFriendRequest()}
             disabled={loading || !!error}
-            activeOpacity={0.7}
           >
-            {loading ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <Text style={styles.buttonText}>Add Friend</Text>
-            )}
+            {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.buttonText}>Send Request</Text>}
           </TouchableOpacity>
         </View>
       </View>
@@ -222,130 +186,26 @@ const AddContacts = () => {
 };
 
 const styles = StyleSheet.create({
-  outerContainer: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  container: {
-    width: '100%',
-    maxWidth: 400,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#333',
-    marginBottom: 24,
-    textAlign: 'center',
-  },
-  inputWrapper: {
-    width: '100%',
-    position: 'relative',
-    marginBottom: 16,
-  },
-  inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-  },
-  inputIcon: {
-    marginRight: 12,
-  },
-  input: {
-    flex: 1,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    backgroundColor: '#fafafa',
-    fontSize: 16,
-  },
-  inputFocused: {
-    borderColor: '#007bff',
-  },
-  inputError: {
-    borderColor: '#ff4d4d',
-  },
-  errorText: {
-    color: '#ff4d4d',
-    fontSize: 14,
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  statusText: {
-    color: '#28a745',
-    fontSize: 14,
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  suggestionsContainer: {
-    position: 'absolute',
-    top: '100%',
-    left: 0,
-    right: 0,
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    marginTop: 4,
-    zIndex: 1000,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-    maxHeight: 200,
-  },
-  suggestionItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  suggestionText: {
-    fontSize: 16,
-    color: '#333',
-    marginLeft: 10,
-  },
-  buttonContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    width: '100%',
-    marginTop: 20,
-  },
-  button: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginHorizontal: 6,
-  },
-  cancelButton: {
-    backgroundColor: '#6c757d',
-  },
-  addButton: {
-    backgroundColor: '#007bff',
-  },
-  buttonDisabled: {
-    backgroundColor: '#99ccff',
-    opacity: 0.7,
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
+  outerContainer: { flex: 1, backgroundColor: '#f5f5f5', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  container: { width: '100%', maxWidth: 400, backgroundColor: '#fff', borderRadius: 12, padding: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 5 },
+  title: { fontSize: 24, fontWeight: '700', color: '#333', marginBottom: 24, textAlign: 'center' },
+  inputWrapper: { width: '100%', position: 'relative', marginBottom: 16 },
+  inputContainer: { flexDirection: 'row', alignItems: 'center', width: '100%' },
+  inputIcon: { marginRight: 12 },
+  input: { flex: 1, padding: 12, borderWidth: 1, borderColor: '#ddd', borderRadius: 8, backgroundColor: '#fafafa', fontSize: 16 },
+  inputFocused: { borderColor: '#007bff' },
+  inputError: { borderColor: '#ff4d4d' },
+  errorText: { color: '#ff4d4d', fontSize: 14, marginBottom: 16, textAlign: 'center' },
+  statusText: { color: '#28a745', fontSize: 14, marginBottom: 16, textAlign: 'center' },
+  suggestionsContainer: { position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: '#fff', borderRadius: 8, borderWidth: 1, borderColor: '#ddd', marginTop: 4, zIndex: 1000, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 },
+  suggestionItem: { flexDirection: 'row', alignItems: 'center', padding: 10, borderBottomWidth: 1, borderBottomColor: '#eee' },
+  suggestionText: { fontSize: 16, color: '#333', marginLeft: 10 },
+  buttonContainer: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginTop: 20 },
+  button: { flex: 1, paddingVertical: 12, borderRadius: 8, alignItems: 'center', marginHorizontal: 6 },
+  cancelButton: { backgroundColor: '#6c757d' },
+  addButton: { backgroundColor: '#007bff' },
+  buttonDisabled: { backgroundColor: '#99ccff', opacity: 0.7 },
+  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 });
 
 export default AddContacts;

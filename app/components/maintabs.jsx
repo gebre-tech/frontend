@@ -4,7 +4,7 @@ import { createMaterialTopTabNavigator } from '@react-navigation/material-top-ta
 import { Ionicons } from '@expo/vector-icons';
 import ChatList from '../(tabs)/chat';
 import ChatScreen from '../(tabs)/chatScreen';
-import Contacts from '../(tabs)/contacts';
+import Contacts from '../(tabs)/Contacts';
 import Groups from '../(tabs)/groups';
 import { AuthContext } from '../../context/AuthContext'; // Import your AuthContext or any context you use for authentication
 

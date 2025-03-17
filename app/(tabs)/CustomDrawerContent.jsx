@@ -113,44 +113,29 @@ export default function CustomDrawerContent(props) {
   const debouncedFetchProfile = useCallback(debounce(fetchProfile, 1000), [fetchProfile]);
 
   const setupWebSocket = useCallback(async () => {
-    if (wsRef.current) return;
+    const token = await AsyncStorage.getItem('token');
+    if (!token) return;
 
-    try {
-      const token = await AsyncStorage.getItem('token');
-      if (!token) return;
+    const ws = new WebSocket(`ws://127.0.0.1:8000/ws/profile/?token=${token}`);
 
-      const websocket = new WebSocket(`${WS_URL}?token=${token}`);
+    ws.onopen = () => console.log('Profile WebSocket connected');
+    ws.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.type === 'last_seen_update') {
+        console.log('Last seen updated:', data.last_seen);
+      } else if (data.type === 'profile_update') {
+        setUsername(data.username);
+        setFirstName(data.first_name);
+        setLastName(data.last_name);
+        setBio(data.bio);
+        setProfileImage(data.profile_picture || 'https://via.placeholder.com/100');
+      }
+    };
+    ws.onerror = (e) => console.error('Profile WebSocket error:', e);
+    ws.onclose = () => console.log('Profile WebSocket disconnected');
 
-      websocket.onopen = () => {
-        console.log('WebSocket connected');
-        websocket.send(JSON.stringify({ type: 'update_last_seen' }));
-      };
-
-      websocket.onmessage = (e) => {
-        const data = JSON.parse(e.data);
-        if (data.type === 'profile_update') {
-          setUsername(data.username);
-          setFirstName(data.first_name);
-          setLastName(data.last_name);
-          setBio(data.bio);
-          setProfileImage(data.profile_picture || 'https://via.placeholder.com/100');
-          setLastSeen(data.last_seen);
-        } else if (data.type === 'last_seen_update') {
-          setLastSeen(data.last_seen);
-        }
-      };
-
-      websocket.onerror = (e) => console.error('WebSocket error:', e);
-      websocket.onclose = () => {
-        console.log('WebSocket disconnected');
-        wsRef.current = null;
-      };
-
-      wsRef.current = websocket;
-      setWs(websocket);
-    } catch (error) {
-      console.error('WebSocket setup error:', error);
-    }
+    wsRef.current = ws;
+    return () => ws.close();
   }, []);
 
   const updateLastSeen = useCallback(() => {

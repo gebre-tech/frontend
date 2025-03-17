@@ -18,37 +18,23 @@ const Contacts = () => {
   const { user } = useContext(AuthContext);
   const [ws, setWs] = useState(null);
 
+  // Fetch contacts from the backend
   const fetchContacts = useCallback(async () => {
     try {
       setLoading(true);
       const token = await AsyncStorage.getItem('token');
-      const response = await axios.get(`${API_URL}/contacts/list/`, {
+      const response = await axios.get(`${API_URL}/contacts/list_with_profiles/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const contactData = response.data.results || response.data;
-      // Fetch profile pictures for each contact
-      const enrichedContacts = await Promise.all(
-        contactData.map(async (contact) => {
-          const profileResponse = await axios.get(`${API_URL}/profiles/friend/${contact.friend.username}/`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          return { ...contact, profile: profileResponse.data };
-        })
-      );
-      setContacts(enrichedContacts);
+      setContacts(response.data || []);
     } catch (error) {
-      if (error.response?.status === 401) {
-        Alert.alert('Error', 'Session expired. Please log in again.', [
-          { text: 'OK', onPress: () => navigation.navigate('Login') },
-        ]);
-      } else {
-        Alert.alert('Error', error.message || 'Could not fetch contacts');
-      }
+      handleError(error);
     } finally {
       setLoading(false);
     }
-  }, [navigation]);
+  }, []);
 
+  // Search contacts based on query
   const searchContacts = useCallback(
     debounce(async (query) => {
       if (!query) {
@@ -62,57 +48,124 @@ const Contacts = () => {
           headers: { Authorization: `Bearer ${token}` },
           params: { query },
         });
-        const contactData = response.data.results || response.data;
-        const enrichedContacts = await Promise.all(
-          contactData.map(async (contact) => {
-            const profileResponse = await axios.get(`${API_URL}/profiles/friend/${contact.friend.username}/`, {
-              headers: { Authorization: `Bearer ${token}` },
-            });
-            return { ...contact, profile: profileResponse.data };
-          })
-        );
-        setContacts(enrichedContacts);
+        setContacts(response.data.results || response.data);
       } catch (error) {
-        if (error.response?.status === 401) {
-          Alert.alert('Error', 'Session expired. Please log in again.', [
-            { text: 'OK', onPress: () => navigation.navigate('Login') },
-          ]);
-        } else {
-          Alert.alert('Error', 'Failed to search contacts');
-        }
+        handleError(error);
       } finally {
         setLoading(false);
       }
     }, 300),
-    [fetchContacts, navigation]
+    [fetchContacts]
   );
 
+  // Remove a friend
+  const removeFriend = async (friendId) => {
+    try {
+      const token = await AsyncStorage.getItem('token');
+      const response = await axios.delete(`${API_URL}/contacts/remove/${friendId}/`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (response.status === 200) {
+        // Remove the friend from the local state
+        setContacts((prevContacts) =>
+          prevContacts.filter((contact) => contact.friend_id !== friendId)
+        );
+        Alert.alert('Success', 'Friend removed successfully');
+      }
+    } catch (error) {
+      if (error.response?.status === 404) {
+        // Handle 404 Not Found
+        Alert.alert('Error', 'Friend not found in your contacts');
+        // Optionally, remove the friend from the local state
+        setContacts((prevContacts) =>
+          prevContacts.filter((contact) => contact.friend_id !== friendId)
+        );
+      } else {
+        // Handle other errors
+        Alert.alert('Error', error.response?.data?.error || 'Failed to remove friend');
+      }
+    }
+  };
+
+  // Handle errors
+  const handleError = (error) => {
+    if (error.response?.status === 401) {
+      Alert.alert('Error', 'Session expired. Please log in again.', [
+        { text: 'OK', onPress: () => navigation.navigate('Login') },
+      ]);
+    } else {
+      Alert.alert('Error', error.response?.data?.error || error.message || 'An error occurred');
+    }
+  };
+
+  // Setup WebSocket connection
   const setupWebSocket = useCallback(async () => {
     const token = await AsyncStorage.getItem('token');
-    if (!token) return;
+    if (!token) {
+      console.error('No token found for WebSocket');
+      return;
+    }
 
-    const websocket = new WebSocket(`ws://127.0.0.1:8000/ws/contacts/?token=${token}`);
+    const connectWebSocket = () => {
+      const contactWs = new WebSocket(`ws://127.0.0.1:8000/ws/contacts/?token=${token}`);
 
-    websocket.onopen = () => console.log('WebSocket connected for Contacts');
-    websocket.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      if (data.type === 'friend_request_accepted') {
-        fetchContacts();
-        Alert.alert('Notification', 'A friend request was accepted!');
-      }
+      contactWs.onopen = () => console.log('Contact WebSocket connected');
+      contactWs.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        console.log('WebSocket message:', data);
+
+        if (data.type === 'friend_removed') {
+          // Update the local state to remove the friend
+          setContacts((prevContacts) =>
+            prevContacts.filter((contact) => contact.friend_id !== data.friend_id)
+          );
+          Alert.alert('Friend Removed', data.message);
+        } else if (data.type === 'friend_request_received') {
+          Alert.alert('New Friend Request', `From ${data.request.sender.first_name}`);
+        } else if (data.type === 'friend_request_accepted') {
+          setContacts((prev) => {
+            if (!prev.some((c) => c.friend_id === data.contact.friend_id)) {
+              return [...prev, data.contact];
+            }
+            return prev;
+          });
+          Alert.alert('Notification', `${data.friend_first_name} is now your friend!`);
+        } else if (data.type === 'friend_added') {
+          setContacts((prev) => {
+            if (!prev.some((c) => c.friend_id === data.contact.friend_id)) {
+              return [...prev, data.contact];
+            }
+            return prev;
+          });
+          Alert.alert('Notification', `${data.contact.friend.user.first_name} added you as a friend!`);
+        }
+      };
+
+      contactWs.onerror = (e) => {
+        console.error('Contact WebSocket error:', e);
+      };
+
+      contactWs.onclose = (e) => {
+        console.log('Contact WebSocket disconnected, reconnecting in 2s...', e.code, e.reason);
+        setTimeout(connectWebSocket, 2000); // Reconnect after 2 seconds
+      };
+
+      setWs(contactWs);
+      return contactWs;
     };
-    websocket.onerror = (e) => console.error('WebSocket error:', e);
-    websocket.onclose = () => console.log('WebSocket disconnected');
 
-    setWs(websocket);
-    return () => websocket.close();
-  }, [fetchContacts]);
+    const wsInstance = connectWebSocket();
+    return () => wsInstance.close();
+  }, []);
 
+  // Fetch contacts and setup WebSocket on component mount
   useEffect(() => {
     fetchContacts();
     setupWebSocket();
   }, [fetchContacts, setupWebSocket]);
 
+  // Refresh contacts when the screen is focused
   useFocusEffect(
     useCallback(() => {
       if (route.params?.refresh) {
@@ -122,32 +175,39 @@ const Contacts = () => {
     }, [route.params?.refresh, fetchContacts, navigation])
   );
 
+  // Search contacts when searchText changes
   useEffect(() => {
     searchContacts(searchText);
   }, [searchText, searchContacts]);
 
+  // Render each contact item
   const renderItem = ({ item }) => (
     <TouchableOpacity
       style={styles.contactItem}
-      onPress={() => navigation.navigate('ChatScreen', { chatId: item.friend_id, friendUsername: item.friend.username })}
+      onPress={() => navigation.navigate('ChatScreen', { chatId: item.friend_id, friendUsername: item.friend.user.username })}
     >
-      <Image
-        source={{ uri: item.profile?.profile_picture || 'https://via.placeholder.com/40' }}
-        style={styles.profileImage}
-        resizeMode="cover"
-      />
+      <TouchableOpacity
+        onPress={() => navigation.navigate('FriendProfile', { username: item.friend.user.username })}
+      >
+        <Image
+          source={{ uri: item.friend.profile_picture || 'https://via.placeholder.com/40' }}
+          style={styles.profileImage}
+          resizeMode="cover"
+        />
+      </TouchableOpacity>
       <View style={styles.contactInfo}>
-        <Text style={styles.contactName}>{item.profile?.user.first_name || item.friend.username}</Text>
+        <Text style={styles.contactName}>{item.friend.user.first_name || item.friend.user.username}</Text>
         <Text style={styles.contactStatus}>
-          Last seen: {item.profile?.last_seen ? new Date(item.profile.last_seen).toLocaleString() : 'Unknown'}
+          {item.is_online ? 'Online' : `Last seen: ${item.friend.last_seen ? new Date(item.friend.last_seen).toLocaleString() : 'Unknown'}`}
         </Text>
       </View>
-      <TouchableOpacity onPress={() => navigation.navigate('FriendProfile', { username: item.friend.username })}>
-        <Ionicons name="information-circle-outline" size={24} color="#007bff" />
+      <TouchableOpacity onPress={() => removeFriend(item.friend_id)}>
+        <Ionicons name="trash-outline" size={24} color="#ff4444" />
       </TouchableOpacity>
     </TouchableOpacity>
   );
 
+  // Render empty state
   const ListEmptyComponent = () => (
     <View style={styles.emptyContainer}>
       <Text style={styles.noContactsText}>{searchText ? 'No contacts found' : 'No contacts available'}</Text>
@@ -180,6 +240,7 @@ const Contacts = () => {
   );
 };
 
+// Styles
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5', padding: 20 },
   searchInput: { padding: 12, borderWidth: 1, borderColor: '#ddd', borderRadius: 8, backgroundColor: '#fff', fontSize: 16, marginBottom: 20 },

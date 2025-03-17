@@ -1,4 +1,3 @@
-// src/screens/AddContacts.jsx
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, FlatList } from 'react-native';
 import axios from 'axios';
@@ -56,6 +55,7 @@ const AddContacts = () => {
           headers: { Authorization: `Bearer ${token}` },
           params: { query },
         });
+        console.log('Suggestions response:', response.data.results); // Debug
         setSuggestions(response.data.results || []);
       } catch (err) {
         setError(err.response?.status === 401 ? 'Session expired. Please log in again.' : 'Failed to load suggestions');
@@ -67,7 +67,10 @@ const AddContacts = () => {
 
   const setupWebSocket = useCallback(async () => {
     const token = await AsyncStorage.getItem('token');
-    if (!token) return;
+    if (!token) {
+      console.error('No token found for WebSocket');
+      return;
+    }
 
     const websocket = new WebSocket(`ws://127.0.0.1:8000/ws/contacts/?token=${token}`);
 
@@ -75,14 +78,18 @@ const AddContacts = () => {
     websocket.onmessage = (e) => {
       const data = JSON.parse(e.data);
       if (data.type === 'friend_request_sent') {
-        Alert.alert('Success', `Contact/Friend request sent to ${data.request.receiver.username}!`, [
-          { text: 'OK', onPress: () => navigation.navigate('Home') }
+        setStatus(`Friend request sent to ${data.request.receiver.first_name}!`);
+        Alert.alert('Success', `Friend request sent to ${data.request.receiver.first_name}!`, [
+          { text: 'OK', onPress: () => navigation.navigate('Contacts') },
         ]);
+        resetForm();
       } else if (data.type === 'friend_request_accepted') {
-        Alert.alert('Notification', 'Your friend request was accepted!');
+        Alert.alert('Notification', `${data.friend_first_name} accepted your friend request!`);
         navigation.navigate('Contacts', { refresh: true });
       } else if (data.type === 'friend_request_rejected') {
-        Alert.alert('Notification', 'Your friend request was rejected.');
+        Alert.alert('Notification', `${data.rejected_by} rejected your friend request.`);
+      } else if (data.type === 'friend_request_received') {
+        Alert.alert('New Friend Request', `From ${data.request.sender.first_name}`);
       }
     };
     websocket.onerror = (e) => console.error('WebSocket error:', e);
@@ -90,7 +97,7 @@ const AddContacts = () => {
 
     setWs(websocket);
     return () => websocket.close();
-  }, [navigation]);
+  }, [navigation, resetForm]);
 
   const handleSendFriendRequest = async (username = friendUsername) => {
     setLoading(true);
@@ -98,12 +105,14 @@ const AddContacts = () => {
     setStatus('');
     try {
       const token = await AsyncStorage.getItem('token');
+      if (!token) {
+        throw new Error('No token found');
+      }
       await axios.post(
         `${API_URL}/contacts/request/`,
         { username },
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
-      resetForm();
       if (ws) {
         ws.send(JSON.stringify({ type: 'friend_request', username }));
       }
@@ -121,7 +130,7 @@ const AddContacts = () => {
     inputRef.current?.focus();
   }, [setupWebSocket]);
 
-  const renderSuggestion = (item) => (
+  const renderSuggestion = ({ item }) => (
     <TouchableOpacity
       style={styles.suggestionItem}
       onPress={() => {
@@ -131,7 +140,7 @@ const AddContacts = () => {
       }}
     >
       <Ionicons name="person-outline" size={20} color="#666" />
-      <Text style={styles.suggestionText}>{item.username}</Text>
+      <Text style={styles.suggestionText}>{item.first_name || item.username}</Text>
     </TouchableOpacity>
   );
 
@@ -158,7 +167,12 @@ const AddContacts = () => {
           </View>
           {suggestions.length > 0 && !error && (
             <View style={styles.suggestionsContainer}>
-              {suggestions.slice(0, 5).map((item) => renderSuggestion(item))}
+              {console.log('Rendering suggestions:', suggestions)} {/* Debug */}
+              <FlatList
+                data={suggestions.slice(0, 5)}
+                renderItem={renderSuggestion}
+                keyExtractor={(item) => (item.id ? item.id.toString() : item.username)} // Fallback to username if id is missing
+              />
             </View>
           )}
         </View>
@@ -177,7 +191,11 @@ const AddContacts = () => {
             onPress={() => handleSendFriendRequest()}
             disabled={loading || !!error}
           >
-            {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.buttonText}>Send Request</Text>}
+            {loading ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={styles.buttonText}>Send Request</Text>
+            )}
           </TouchableOpacity>
         </View>
       </View>
@@ -197,7 +215,7 @@ const styles = StyleSheet.create({
   inputError: { borderColor: '#ff4d4d' },
   errorText: { color: '#ff4d4d', fontSize: 14, marginBottom: 16, textAlign: 'center' },
   statusText: { color: '#28a745', fontSize: 14, marginBottom: 16, textAlign: 'center' },
-  suggestionsContainer: { position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: '#fff', borderRadius: 8, borderWidth: 1, borderColor: '#ddd', marginTop: 4, zIndex: 1000, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 },
+  suggestionsContainer: { position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: '#fff', borderRadius: 8, borderWidth: 1, borderColor: '#ddd', marginTop: 4, zIndex: 1000, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3, maxHeight: 200 },
   suggestionItem: { flexDirection: 'row', alignItems: 'center', padding: 10, borderBottomWidth: 1, borderBottomColor: '#eee' },
   suggestionText: { fontSize: 16, color: '#333', marginLeft: 10 },
   buttonContainer: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginTop: 20 },

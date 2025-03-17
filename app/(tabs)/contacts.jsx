@@ -1,6 +1,5 @@
-// src/screens/Contacts.jsx
 import React, { useState, useEffect, useContext, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, TextInput, StyleSheet, Alert } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, TextInput, StyleSheet, Alert, Image } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
@@ -26,7 +25,17 @@ const Contacts = () => {
       const response = await axios.get(`${API_URL}/contacts/list/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setContacts(response.data.results || response.data);
+      const contactData = response.data.results || response.data;
+      // Fetch profile pictures for each contact
+      const enrichedContacts = await Promise.all(
+        contactData.map(async (contact) => {
+          const profileResponse = await axios.get(`${API_URL}/profiles/friend/${contact.friend.username}/`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          return { ...contact, profile: profileResponse.data };
+        })
+      );
+      setContacts(enrichedContacts);
     } catch (error) {
       if (error.response?.status === 401) {
         Alert.alert('Error', 'Session expired. Please log in again.', [
@@ -53,7 +62,16 @@ const Contacts = () => {
           headers: { Authorization: `Bearer ${token}` },
           params: { query },
         });
-        setContacts(response.data.results || response.data);
+        const contactData = response.data.results || response.data;
+        const enrichedContacts = await Promise.all(
+          contactData.map(async (contact) => {
+            const profileResponse = await axios.get(`${API_URL}/profiles/friend/${contact.friend.username}/`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            return { ...contact, profile: profileResponse.data };
+          })
+        );
+        setContacts(enrichedContacts);
       } catch (error) {
         if (error.response?.status === 401) {
           Alert.alert('Error', 'Session expired. Please log in again.', [
@@ -113,11 +131,15 @@ const Contacts = () => {
       style={styles.contactItem}
       onPress={() => navigation.navigate('ChatScreen', { chatId: item.friend_id, friendUsername: item.friend.username })}
     >
-      <Ionicons name="person-circle-outline" size={40} color="#333" />
+      <Image
+        source={{ uri: item.profile?.profile_picture || 'https://via.placeholder.com/40' }}
+        style={styles.profileImage}
+        resizeMode="cover"
+      />
       <View style={styles.contactInfo}>
-        <Text style={styles.contactName}>{item.friend.username}</Text>
+        <Text style={styles.contactName}>{item.profile?.user.first_name || item.friend.username}</Text>
         <Text style={styles.contactStatus}>
-          Last seen: {item.friend.last_seen ? new Date(item.friend.last_seen).toLocaleString() : 'Unknown'}
+          Last seen: {item.profile?.last_seen ? new Date(item.profile.last_seen).toLocaleString() : 'Unknown'}
         </Text>
       </View>
       <TouchableOpacity onPress={() => navigation.navigate('FriendProfile', { username: item.friend.username })}>
@@ -162,6 +184,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5', padding: 20 },
   searchInput: { padding: 12, borderWidth: 1, borderColor: '#ddd', borderRadius: 8, backgroundColor: '#fff', fontSize: 16, marginBottom: 20 },
   contactItem: { flexDirection: 'row', alignItems: 'center', padding: 15, backgroundColor: '#fff', borderRadius: 8, marginBottom: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 2 },
+  profileImage: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#ddd' },
   contactInfo: { flex: 1, marginLeft: 15 },
   contactName: { fontSize: 16, fontWeight: '600', color: '#333' },
   contactStatus: { fontSize: 12, color: '#666', marginTop: 2 },

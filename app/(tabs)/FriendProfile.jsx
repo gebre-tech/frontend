@@ -1,89 +1,89 @@
 // src/screens/FriendProfile.jsx
 import React, { useState, useEffect } from 'react';
-import { View, Text, Image, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, Image, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useRoute } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 
 const API_URL = "http://127.0.0.1:8000";
 
 const FriendProfile = () => {
-  const route = useRoute();
-  const { username } = route.params;
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const navigation = useNavigation();
+  const route = useRoute();
+  const { username } = route.params;
+
+  const fetchFriendProfile = async () => {
+    try {
+      setLoading(true);
+      const token = await AsyncStorage.getItem('token');
+      const response = await axios.get(`${API_URL}/profiles/friend/${username}/`, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 5000,
+      });
+      setProfile(response.data);
+    } catch (error) {
+      if (error.response?.status === 401) {
+        Alert.alert('Error', 'Session expired. Please log in again.', [
+          { text: 'OK', onPress: () => navigation.navigate('Login') },
+        ]);
+      } else {
+        Alert.alert('Error', error.response?.data?.error || 'Failed to load profile');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchProfile = async () => {
-      try {
-        const token = await AsyncStorage.getItem('token');
-        const response = await axios.get(`${API_URL}/profiles/friend/${username}/`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        setProfile(response.data);
-      } catch (error) {
-        console.error('Error fetching friend profile:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchProfile();
+    fetchFriendProfile();
   }, [username]);
 
   if (loading) {
-    return <ActivityIndicator size="large" color="#007bff" />;
+    return (
+      <View style={styles.loaderContainer}>
+        <ActivityIndicator size="large" color="#007bff" />
+      </View>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.errorText}>Profile not found</Text>
+      </View>
+    );
   }
 
   return (
     <View style={styles.container}>
       <Image
-        source={{ uri: profile?.profile_picture || 'https://via.placeholder.com/150' }}
+        source={{ uri: profile.profile_picture || 'https://via.placeholder.com/150' }}
         style={styles.profileImage}
+        resizeMode="cover"
       />
-      <Text style={styles.username}>{profile?.user.username}</Text>
-      <Text style={styles.email}>{profile?.user.email}</Text>
-      <Text style={styles.bio}>{profile?.bio || 'No bio available'}</Text>
-      <Text style={styles.lastSeen}>
-        Last seen: {profile?.last_seen ? new Date(profile.last_seen).toLocaleString() : 'Unknown'}
-      </Text>
+      <Text style={styles.name}>{`${profile.user.first_name} ${profile.user.last_name}`}</Text>
+      <Text style={styles.username}>@{profile.user.username}</Text>
+      <Text style={styles.bio}>{profile.bio || 'No bio available'}</Text>
+      {profile.last_seen && (
+        <Text style={styles.lastSeen}>
+          Last seen: {new Date(profile.last_seen).toLocaleString()}
+        </Text>
+      )}
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: 'center',
-    padding: 20,
-    backgroundColor: '#f5f5f5',
-  },
-  profileImage: {
-    width: 150,
-    height: 150,
-    borderRadius: 75,
-    marginBottom: 20,
-  },
-  username: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#333',
-  },
-  email: {
-    fontSize: 16,
-    color: '#666',
-    marginTop: 5,
-  },
-  bio: {
-    fontSize: 14,
-    color: '#333',
-    marginTop: 10,
-    textAlign: 'center',
-  },
-  lastSeen: {
-    fontSize: 12,
-    color: '#666',
-    marginTop: 10,
-  },
+  container: { flex: 1, alignItems: 'center', padding: 20, backgroundColor: '#f5f5f5' },
+  loaderContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  profileImage: { width: 150, height: 150, borderRadius: 75, marginBottom: 20, borderWidth: 2, borderColor: '#007bff' },
+  name: { fontSize: 24, fontWeight: '700', color: '#333', marginBottom: 10 },
+  username: { fontSize: 18, color: '#666', marginBottom: 10 },
+  bio: { fontSize: 16, color: '#333', textAlign: 'center', marginBottom: 10 },
+  lastSeen: { fontSize: 14, color: '#666' },
+  errorText: { fontSize: 16, color: '#666', textAlign: 'center' },
 });
 
 export default FriendProfile;

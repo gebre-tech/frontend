@@ -27,7 +27,7 @@ export default function Home() {
       }}
     >
       <Drawer.Screen
-        name="Home"
+        name="HomeScreen"
         component={TopTabs}
         options={{
           drawerIcon: ({ color }) => (
@@ -36,17 +36,16 @@ export default function Home() {
         }}
       />
       <Drawer.Screen
-        name="Add Contacts"
+        name="AddContacts"
         component={AddContacts}
         options={{
           drawerIcon: ({ color }) => (
-            < hydraMaterialCommunityIcons name="account-plus" size={24} color={color} />
-            
+            <MaterialCommunityIcons name="account-plus" size={24} color={color} />
           ),
         }}
       />
       <Drawer.Screen
-        name="Create New Group"
+        name="CreateNewGroup"
         component={CreateGroupScreen}
         options={{
           drawerIcon: ({ color }) => (

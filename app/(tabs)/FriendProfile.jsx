@@ -18,10 +18,7 @@ const FriendProfile = () => {
     try {
       setLoading(true);
       const token = await AsyncStorage.getItem('token');
-      const response = await axios.get(`${API_URL}/profiles/friend/${username}/`, {
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: 5000,
-      });
+      const response = await axios.get(`${API_URL}/profiles/friend/${username}/`, { headers: { Authorization: `Bearer ${token}` } });
       const profileData = response.data;
       const now = new Date();
       const lastSeen = profileData.last_seen ? new Date(profileData.last_seen) : null;
@@ -29,14 +26,9 @@ const FriendProfile = () => {
       setProfile(profileData);
     } catch (error) {
       if (error.response?.status === 401) {
-        Alert.alert('Error', 'Session expired. Please log in again.', [
-          { text: 'OK', onPress: () => navigation.navigate('Login') },
-        ]);
+        Alert.alert('Error', 'Session expired. Please log in again.', [{ text: 'OK', onPress: () => navigation.navigate('Login') }]);
       } else {
-        Alert.alert('Error', error.response?.data?.error || 'Failed to load profile', [
-          { text: 'Retry', onPress: fetchFriendProfile },
-          { text: 'Back', onPress: () => navigation.goBack() },
-        ]);
+        Alert.alert('Error', error.response?.data?.error || 'Failed to load profile');
       }
     } finally {
       setLoading(false);
@@ -48,11 +40,7 @@ const FriendProfile = () => {
   }, [username]);
 
   if (loading) {
-    return (
-      <View style={styles.loaderContainer}>
-        <ActivityIndicator size="large" color="#007bff" />
-      </View>
-    );
+    return <View style={styles.loaderContainer}><ActivityIndicator size="large" color="#007AFF" /></View>;
   }
 
   if (!profile) {
@@ -60,7 +48,7 @@ const FriendProfile = () => {
       <View style={styles.container}>
         <Text style={styles.errorText}>Profile not found</Text>
         <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={24} color="#007bff" />
+          <Ionicons name="arrow-back" size={24} color="#007AFF" />
           <Text style={styles.backButtonText}>Back</Text>
         </TouchableOpacity>
       </View>
@@ -70,7 +58,7 @@ const FriendProfile = () => {
   return (
     <View style={styles.container}>
       <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-        <Ionicons name="arrow-back" size={24} color="#007bff" />
+        <Ionicons name="arrow-back" size={24} color="#007AFF" />
         <Text style={styles.backButtonText}>Back</Text>
       </TouchableOpacity>
       <Image
@@ -91,14 +79,14 @@ const FriendProfile = () => {
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center', padding: 20, backgroundColor: '#f5f5f5' },
   loaderContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  profileImage: { width: 150, height: 150, borderRadius: 75, marginBottom: 20, borderWidth: 2, borderColor: '#007bff' },
+  profileImage: { width: 150, height: 150, borderRadius: 75, marginBottom: 20, borderWidth: 2, borderColor: '#007AFF' },
   name: { fontSize: 24, fontWeight: '700', color: '#333', marginBottom: 10 },
   username: { fontSize: 18, color: '#666', marginBottom: 10 },
   bio: { fontSize: 16, color: '#333', textAlign: 'center', marginBottom: 10 },
   lastSeen: { fontSize: 14, color: '#666' },
   errorText: { fontSize: 16, color: '#666', textAlign: 'center', marginBottom: 20 },
   backButton: { flexDirection: 'row', alignItems: 'center', position: 'absolute', top: 20, left: 20 },
-  backButtonText: { fontSize: 16, color: '#007bff', marginLeft: 5 },
+  backButtonText: { fontSize: 16, color: '#007AFF', marginLeft: 5 },
 });
 
 export default FriendProfile;

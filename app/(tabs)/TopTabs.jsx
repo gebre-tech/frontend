@@ -3,9 +3,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { createMaterialTopTabNavigator } from '@react-navigation/material-top-tabs';
 import { Dimensions, View, Text, StyleSheet } from 'react-native';
 import ChatStack from './ChatStack';
-import Contacts from './Contacts'; // Ensure correct path
-import Groups from './groups'; // Ensure correct path
-import FriendRequests from './FriendRequests'; // New import
+import Contacts from './Contacts'; // Ensure correct path and casing
+import Groups from './groups'; // Ensure correct path and casing
+import FriendRequests from './FriendRequests'; // Ensure correct path and casing
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 import { Ionicons } from '@expo/vector-icons';

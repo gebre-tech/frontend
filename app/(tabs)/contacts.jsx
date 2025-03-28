@@ -1,3 +1,4 @@
+// Contacts.jsx
 import React, { useState, useEffect, useContext, useCallback } from 'react';
 import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, TextInput, StyleSheet, Alert, Image } from 'react-native';
 import axios from 'axios';
@@ -58,25 +59,32 @@ const Contacts = () => {
     try {
       const token = await AsyncStorage.getItem('token');
       if (!token) throw new Error("No authentication token found");
+      console.log(`Starting chat: friendId=${friendId}, friendUsername=${friendUsername}, tokenPrefix=${token.slice(0, 10)}...`);
 
       const response = await axios.post(
         `${API_URL}/chat/send-message/`,
         {
           receiver_id: friendId,
-          content: '', // Empty initial message to establish chat
+          content: '',
           message_type: 'text',
+          isGroup: false,
         },
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
 
-      console.log("Send message response:", JSON.stringify(response.data)); // Debug full response
-      const chatId = response.data.chat?.id || response.data.id; // Flexible extraction
+      console.log("Send message response:", JSON.stringify(response.data));
+      const chatId = response.data.chat?.id || response.data.id;
       if (!chatId) throw new Error("Chat ID not found in response");
-      
-      console.log(`Started chat with ${friendUsername}, chatId: ${chatId}`);
+
+      console.log(`Navigating to ChatScreen with chatId=${chatId}, friendUsername=${friendUsername}`);
       navigation.navigate('ChatScreen', { chatId, friendUsername, isGroup: false });
     } catch (error) {
-      console.error("Start chat error:", error);
+      console.error("Start chat error:", {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+        headers: error.response?.headers,
+      });
       Alert.alert('Error', error.response?.data?.error || error.message || 'Failed to start chat');
     }
   };

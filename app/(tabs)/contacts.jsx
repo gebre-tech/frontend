@@ -1,19 +1,29 @@
 // Contacts.jsx
-import React, { useState, useEffect, useContext, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, TextInput, StyleSheet, Alert, Image } from 'react-native';
-import axios from 'axios';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { AuthContext } from '../../context/AuthContext';
-import { Ionicons } from '@expo/vector-icons';
-import debounce from 'lodash.debounce';
+import React, { useState, useEffect, useContext, useCallback } from "react";
+import {
+  View,
+  Text,
+  FlatList,
+  TouchableOpacity,
+  ActivityIndicator,
+  TextInput,
+  Alert,
+  Image,
+} from "react-native";
+import axios from "axios";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
+import { AuthContext } from "../../context/AuthContext";
+import { Ionicons } from "@expo/vector-icons";
+import debounce from "lodash/debounce";
+import tw from "twrnc";
 
-const API_URL = "http://127.0.0.1:8000"; // Replace with your device's IP if testing on emulator
+const API_URL = "http://127.0.0.1:8000";
 
 const Contacts = () => {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [searchText, setSearchText] = useState('');
+  const [searchText, setSearchText] = useState("");
   const navigation = useNavigation();
   const { user } = useContext(AuthContext);
   const [ws, setWs] = useState(null);
@@ -21,7 +31,7 @@ const Contacts = () => {
   const fetchContacts = useCallback(async () => {
     try {
       setLoading(true);
-      const token = await AsyncStorage.getItem('token');
+      const token = await AsyncStorage.getItem("token");
       if (!token) throw new Error("No authentication token found");
       const response = await axios.get(`${API_URL}/contacts/list_with_profiles/`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -39,7 +49,7 @@ const Contacts = () => {
       if (!query) return fetchContacts();
       try {
         setLoading(true);
-        const token = await AsyncStorage.getItem('token');
+        const token = await AsyncStorage.getItem("token");
         if (!token) throw new Error("No authentication token found");
         const response = await axios.get(`${API_URL}/contacts/search/`, {
           headers: { Authorization: `Bearer ${token}` },
@@ -57,19 +67,21 @@ const Contacts = () => {
 
   const startChat = async (friendId, friendUsername) => {
     try {
-      const token = await AsyncStorage.getItem('token');
+      const token = await AsyncStorage.getItem("token");
       if (!token) throw new Error("No authentication token found");
-      console.log(`Starting chat: friendId=${friendId}, friendUsername=${friendUsername}, tokenPrefix=${token.slice(0, 10)}...`);
+      console.log(
+        `Starting chat: friendId=${friendId}, friendUsername=${friendUsername}, tokenPrefix=${token.slice(0, 10)}...`
+      );
 
       const response = await axios.post(
         `${API_URL}/chat/send-message/`,
         {
           receiver_id: friendId,
-          content: '',
-          message_type: 'text',
+          content: "",
+          message_type: "text",
           isGroup: false,
         },
-        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+        { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
       );
 
       console.log("Send message response:", JSON.stringify(response.data));
@@ -77,7 +89,7 @@ const Contacts = () => {
       if (!chatId) throw new Error("Chat ID not found in response");
 
       console.log(`Navigating to ChatScreen with chatId=${chatId}, friendUsername=${friendUsername}`);
-      navigation.navigate('ChatScreen', { chatId, friendUsername, isGroup: false });
+      navigation.navigate("ChatScreen", { chatId, friendUsername, isGroup: false });
     } catch (error) {
       console.error("Start chat error:", {
         message: error.message,
@@ -85,23 +97,23 @@ const Contacts = () => {
         data: error.response?.data,
         headers: error.response?.headers,
       });
-      Alert.alert('Error', error.response?.data?.error || error.message || 'Failed to start chat');
+      Alert.alert("Error", error.response?.data?.error || error.message || "Failed to start chat");
     }
   };
 
   const removeFriend = async (friendId) => {
     try {
-      const token = await AsyncStorage.getItem('token');
+      const token = await AsyncStorage.getItem("token");
       if (!token) throw new Error("No authentication token found");
       await axios.delete(`${API_URL}/contacts/remove/${friendId}/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       setContacts((prev) => prev.filter((contact) => contact.friend_id !== friendId));
-      Alert.alert('Success', 'Friend removed successfully');
+      Alert.alert("Success", "Friend removed successfully");
     } catch (error) {
       if (error.response?.status === 404) {
         setContacts((prev) => prev.filter((contact) => contact.friend_id !== friendId));
-        Alert.alert('Info', 'Friend was already removed');
+        Alert.alert("Info", "Friend was already removed");
       } else {
         handleError(error);
       }
@@ -111,30 +123,33 @@ const Contacts = () => {
   const handleError = (error) => {
     console.error("Error:", error);
     if (error.response?.status === 401) {
-      Alert.alert('Error', 'Session expired. Please log in again.', [
-        { text: 'OK', onPress: () => navigation.navigate('Login') },
+      Alert.alert("Error", "Session expired. Please log in again.", [
+        { text: "OK", onPress: () => navigation.navigate("Login") },
       ]);
     } else {
-      Alert.alert('Error', error.response?.data?.error || error.message || 'An error occurred');
+      Alert.alert("Error", error.response?.data?.error || error.message || "An error occurred");
     }
   };
 
   const setupWebSocket = useCallback(async () => {
-    const token = await AsyncStorage.getItem('token');
+    const token = await AsyncStorage.getItem("token");
     if (!token) return;
 
     const wsInstance = new WebSocket(`ws://127.0.0.1:8000/ws/contacts/?token=${token}`);
-    wsInstance.onopen = () => console.log('Contacts WebSocket connected');
+    wsInstance.onopen = () => console.log("Contacts WebSocket connected");
     wsInstance.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
         console.log("Contacts WebSocket message:", data);
-        if (data.type === 'friend_removed') {
+        if (data.type === "friend_removed") {
           setContacts((prev) => prev.filter((contact) => contact.friend_id !== data.friend_id));
-          Alert.alert('Notification', `${data.friend_first_name} removed you as a friend`);
-        } else if (data.type === 'friend_request_accepted') {
+          Alert.alert("Notification", `${data.friend_first_name} removed you as a friend`);
+        } else if (data.type === "friend_request_accepted") {
           setContacts((prev) => [...prev, data.contact]);
-          Alert.alert('Notification', `${data.contact.friend.user.username} accepted your friend request`);
+          Alert.alert(
+            "Notification",
+            `${data.contact.friend.user.username} accepted your friend request`
+          );
         }
       } catch (error) {
         console.error("WebSocket message parsing error:", error);
@@ -144,7 +159,7 @@ const Contacts = () => {
       console.error("WebSocket error:", error);
       setTimeout(setupWebSocket, 2000);
     };
-    wsInstance.onclose = () => console.log('Contacts WebSocket closed');
+    wsInstance.onclose = () => console.log("Contacts WebSocket closed");
     setWs(wsInstance);
 
     return () => {
@@ -167,7 +182,7 @@ const Contacts = () => {
 
   useFocusEffect(
     useCallback(() => {
-      const currentRoute = navigation.getState()?.routes.find(r => r.name === 'Contacts');
+      const currentRoute = navigation.getState()?.routes.find((r) => r.name === "Contacts");
       if (currentRoute?.params?.refresh) {
         fetchContacts();
         navigation.setParams({ refresh: false });
@@ -179,64 +194,77 @@ const Contacts = () => {
     searchContacts(searchText);
   }, [searchText, searchContacts]);
 
-  const renderItem = ({ item }) => (
-    <TouchableOpacity
-      style={styles.contactItem}
-      onPress={() => startChat(item.friend_id, item.friend.user.username)}
-    >
-      <Image
-        source={{ uri: item.friend.profile_picture || 'https://via.placeholder.com/40' }}
-        style={styles.profileImage}
-      />
-      <View style={styles.contactInfo}>
-        <Text style={styles.contactName}>{item.friend.user.first_name || item.friend.user.username}</Text>
-        <Text style={styles.contactStatus}>
-          {item.is_online
-            ? 'Online'
-            : `Last seen: ${item.friend.last_seen ? new Date(item.friend.last_seen).toLocaleString() : 'Unknown'}`}
-        </Text>
-      </View>
-      <TouchableOpacity onPress={() => removeFriend(item.friend_id)}>
-        <Ionicons name="trash-outline" size={24} color="#007AFF" />
+  const renderItem = ({ item }) => {
+    const isOnline = item.is_online || (item.friend.last_seen && new Date() - new Date(item.friend.last_seen) < 5 * 60 * 1000);
+
+    return (
+      <TouchableOpacity
+        style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-sm border-b border-gray-100`}
+        onPress={() => startChat(item.friend_id, item.friend.user.username)}
+      >
+        <View style={tw`relative`}>
+          <Image
+            source={{
+              uri: item.friend.profile_picture || "https://via.placeholder.com/40",
+            }}
+            style={tw`w-12 h-12 rounded-full mr-3`}
+          />
+          {isOnline && (
+            <View
+              style={tw`absolute bottom-0 right-2 w-5 h-5 bg-green-500 rounded-full border-2 border-white`}
+            />
+          )}
+        </View>
+        <View style={tw`flex-1`}>
+          <Text style={tw`text-lg font-semibold text-gray-800`}>
+            {item.friend.user.first_name || item.friend.user.username}
+          </Text>
+          <Text style={tw`text-xs mt-1 ${isOnline ? "text-green-500" : "text-gray-500"}`}>
+            {isOnline
+              ? "Online"
+              : `Last seen: ${
+                  item.friend.last_seen
+                    ? new Date(item.friend.last_seen).toLocaleString()
+                    : "Unknown"
+                }`}
+          </Text>
+        </View>
+        <TouchableOpacity onPress={() => removeFriend(item.friend_id)}>
+          <Ionicons name="trash-outline" size={24} color="#EF4444" />
+        </TouchableOpacity>
       </TouchableOpacity>
-    </TouchableOpacity>
-  );
+    );
+  };
 
   return (
-    <View style={styles.container}>
-      <TextInput
-        style={styles.searchInput}
-        placeholder="Search contacts..."
-        value={searchText}
-        onChangeText={setSearchText}
-        autoCapitalize="none"
-      />
+    <View style={tw`flex-1 bg-gray-100`}>
+      <View style={tw`p-4`}>
+        <TextInput
+          style={tw`bg-white rounded-full px-4 py-2 text-gray-800 border border-gray-200 shadow-sm`}
+          placeholder="Search contacts..."
+          placeholderTextColor="#9CA3AF"
+          value={searchText}
+          onChangeText={setSearchText}
+          autoCapitalize="none"
+        />
+      </View>
       {loading ? (
-        <ActivityIndicator size="large" color="#007AFF" style={styles.loaderContainer} />
+        <ActivityIndicator size="large" color="#007AFF" style={tw`flex-1 justify-center`} />
       ) : (
         <FlatList
           data={contacts}
           renderItem={renderItem}
           keyExtractor={(item) => item.friend_id.toString()}
-          ListEmptyComponent={<Text style={styles.noContactsText}>{searchText ? 'No contacts found' : 'No contacts available'}</Text>}
-          contentContainerStyle={styles.listContainer}
+          ListEmptyComponent={
+            <Text style={tw`text-center mt-5 text-gray-500`}>
+              {searchText ? "No contacts found" : "No contacts available"}
+            </Text>
+          }
+          contentContainerStyle={tw`pb-4`}
         />
       )}
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5', padding: 20 },
-  searchInput: { padding: 12, borderWidth: 1, borderColor: '#ddd', borderRadius: 8, backgroundColor: '#fff', fontSize: 16, marginBottom: 20 },
-  contactItem: { flexDirection: 'row', alignItems: 'center', padding: 15, backgroundColor: '#fff', borderRadius: 8, marginBottom: 10, elevation: 2 },
-  profileImage: { width: 40, height: 40, borderRadius: 20 },
-  contactInfo: { flex: 1, marginLeft: 15 },
-  contactName: { fontSize: 16, fontWeight: '600', color: '#333' },
-  contactStatus: { fontSize: 12, color: '#666', marginTop: 2 },
-  noContactsText: { fontSize: 16, color: '#666', textAlign: 'center', marginTop: 20 },
-  loaderContainer: { flex: 1, justifyContent: 'center' },
-  listContainer: { flexGrow: 1 },
-});
 
 export default Contacts;

@@ -10,14 +10,18 @@ import {
   Text,
   Modal,
   Pressable,
+  KeyboardAvoidingView,
+  Platform,
+  Animated,
 } from "react-native";
-import { useRoute, useNavigation } from "@react-navigation/native";
+import { useRoute, useNavigation, useFocusEffect } from "@react-navigation/native";
 import { AuthContext } from "../../context/AuthContext";
 import { Ionicons } from "@expo/vector-icons";
 import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
-import * as Location from "expo-location";
+import * as DocumentPicker from "expo-document-picker";
+import { Video } from "expo-av";
 import tw from "twrnc";
 import { useWebSocket } from "../../hooks/useWebSocket";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -26,49 +30,67 @@ import debounce from "lodash/debounce";
 const API_URL = "http://127.0.0.1:8000";
 const PLACEHOLDER_IMAGE = "https://via.placeholder.com/30";
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
+const PAGE_SIZE = 50;
 
-/**
- * @typedef {Object} Message
- * @property {string} id - Message ID
- * @property {string} [tempId] - Temporary client-side ID
- * @property {{id: string, username: string, profile_picture?: string}} sender - Sender details
- * @property {string} content - Message content
- * @property {string} message_type - Type (e.g., "text", "image", "location")
- * @property {string} [attachment_url] - Attachment URL
- * @property {string} timestamp - ISO timestamp
- * @property {{id: string}[]} delivered_to - Users who received the message
- * @property {{id: string}[]} seen_by - Users who saw the message
- * @property {boolean} is_deleted - Deletion status
- * @property {Message} [forwarded_from] - Forwarded message details
- * @property {string} [edited_at] - Edit timestamp
- * @property {string[]} [reactions] - Reactions to the message
- * @property {boolean} [isPinned] - Pinned status
- */
+const isUserOnline = (lastSeen) => {
+  const now = new Date();
+  const lastSeenDate = lastSeen ? new Date(lastSeen) : null;
+  return lastSeenDate && now - lastSeenDate < 5 * 60 * 1000;
+};
 
-/**
- * @typedef {Object} ChatScreenProps
- * @property {string} chatId - Chat room ID
- * @property {string} friendUsername - Friend's username (for non-group chats)
- * @property {boolean} [isGroup] - Whether it's a group chat
- */
+const logger = {
+  info: (...args) => console.log("[ChatScreen]", ...args),
+  error: (...args) => console.error("[ChatScreen]", ...args),
+};
+
+const VideoMessage = ({ uri }) => {
+  const [error, setError] = useState(null);
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (videoRef.current) {
+        videoRef.current.stopAsync().catch(() => {});
+      }
+    };
+  }, [uri]);
+
+  if (!uri) return <Text style={tw`text-gray-500`}>Loading video...</Text>;
+  if (error) return <Text style={tw`text-red-500`}>Video failed: {error}</Text>;
+
+  return (
+    <Video
+      ref={videoRef}
+      source={{ uri }}
+      style={tw`w-48 h-48 rounded-xl shadow-sm`}
+      useNativeControls
+      resizeMode="contain"
+      isMuted={true}
+      onError={(e) => setError(e.error?.message || "Unknown error")}
+    />
+  );
+};
 
 const ChatScreen = () => {
   const route = useRoute();
   const navigation = useNavigation();
-  const { chatId, friendUsername, isGroup = false } = /** @type {ChatScreenProps} */ (route.params || {});
+  const { chatId, friendUsername, isGroup = false } = route.params || {};
   const { user, loading: authLoading, refreshToken } = useContext(AuthContext);
   const queryClient = useQueryClient();
   const flatListRef = useRef(null);
   const inputRef = useRef(null);
+  const isMountedRef = useRef(true);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
 
   const [message, setMessage] = useState("");
   const [editingMessageId, setEditingMessageId] = useState(null);
-  const [previewImage, setPreviewImage] = useState(null);
+  const [pendingFile, setPendingFile] = useState(null);
   const [queuedMessages, setQueuedMessages] = useState([]);
   const [isAtBottom, setIsAtBottom] = useState(true);
-  const [searchFilter, setSearchFilter] = useState("");
   const [showReactions, setShowReactions] = useState(null);
-  const [liveLocation, setLiveLocation] = useState(null);
+  const [hasMoreMessages, setHasMoreMessages] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [page, setPage] = useState(1);
 
   const {
     messages,
@@ -76,608 +98,854 @@ const ChatScreen = () => {
     sendMessage,
     isConnected,
     typingUsers,
-    connectionStatus,
-    lastError,
-    closeConnection,
+    retryConnection,
     subscribeToEvent,
     clearQueue,
-    ConnectionStatus,
-  } = useWebSocket({ chatId, isGroup, userId: user?.id, maxReconnectAttempts: 10 });
+  } = useWebSocket({ chatId, isGroup, userId: user?.id });
 
-  // Debugging: Log WebSocket state
-  useEffect(() => {
-    console.log(`[WebSocket Debug] chatId: ${chatId}, isConnected: ${isConnected}, status: ${connectionStatus}, error: ${lastError}`);
-  }, [chatId, isConnected, connectionStatus, lastError]);
-
-  // Load queued messages
-  useEffect(() => {
-    const loadQueuedMessages = async () => {
-      try {
-        const stored = await AsyncStorage.getItem(`queuedMessages_${chatId}`);
-        if (stored) {
-          const queued = JSON.parse(stored);
-          setQueuedMessages(queued);
-          console.log(`[Debug] Loaded queued messages: ${queued.length}`);
-        }
-      } catch (error) {
-        console.error("[Debug] Failed to load queued messages:", error);
-      }
-    };
-    loadQueuedMessages();
-  }, [chatId]);
-
-  // Persist queued messages
-  useEffect(() => {
-    AsyncStorage.setItem(`queuedMessages_${chatId}`, JSON.stringify(queuedMessages)).catch((error) =>
-      console.error("[Debug] Failed to save queued messages:", error)
-    );
-  }, [queuedMessages, chatId]);
-
-  // Deduplicate messages helper
+  // Enhanced deduplication logic
   const deduplicateMessages = useCallback((msgs) => {
-    const messageMap = new Map();
+    const map = new Map();
     msgs.forEach((msg) => {
       const key = msg.id || msg.tempId;
-      if (key) messageMap.set(key, msg); // Only add if key exists
+      if (key && !map.has(key)) {
+        map.set(key, msg);
+      }
     });
-    const result = Array.from(messageMap.values()).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-    console.log("[Debug] Deduplicated message keys:", result.map((m) => m.id || m.tempId));
-    return result;
+    return Array.from(map.values()).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   }, []);
 
-  // Fetch messages with pagination
-  const { data: fetchedMessages = [], isLoading: messagesLoading } = useQuery({
-    queryKey: ["messages", chatId],
-    queryFn: async () => {
-      const token = await AsyncStorage.getItem("token");
-      console.log("[Debug] Fetching messages with token:", token?.slice(0, 10));
-      const res = await axios.get(`${API_URL}/chat/get-messages/${chatId}/?limit=50`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      return Array.isArray(res.data) ? res.data : [];
+  const fetchMessages = useCallback(
+    async (pageNum) => {
+      try {
+        const token = await AsyncStorage.getItem("token");
+        const offset = (pageNum - 1) * PAGE_SIZE;
+        const { data } = await axios.get(
+          `${API_URL}/chat/get-messages/${chatId}/?limit=${PAGE_SIZE}&offset=${offset}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const deduplicatedData = deduplicateMessages(data);
+        await AsyncStorage.setItem(`chat-${chatId}-page-${pageNum}`, JSON.stringify(deduplicatedData));
+        return deduplicatedData;
+      } catch (error) {
+        logger.error("Error fetching messages:", error);
+        const cached = await AsyncStorage.getItem(`chat-${chatId}-page-${pageNum}`);
+        return cached ? deduplicateMessages(JSON.parse(cached)) : [];
+      }
     },
-    enabled: !!chatId && !!user,
-    staleTime: 5 * 60 * 1000, // 5 minutes
-    initialData: [],
-    onSuccess: (data) => {
-      setMessages((prev) => deduplicateMessages([...prev, ...data]));
-    },
-    onError: (error) => {
-      console.error("[Debug] Fetch messages error:", error.response?.data || error.message);
-      Alert.alert("Error", "Failed to load messages");
-    },
-  });
+    [chatId, deduplicateMessages]
+  );
 
-  // Fetch profile
+  const loadInitialMessages = useCallback(async () => {
+    try {
+      const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+      if (cachedMessages) {
+        setMessages(deduplicateMessages(JSON.parse(cachedMessages)));
+      }
+
+      const serverMessages = await fetchMessages(1);
+      setMessages(deduplicateMessages(serverMessages));
+      setHasMoreMessages(serverMessages.length >= PAGE_SIZE);
+
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 100);
+    } catch (error) {
+      logger.error("Error loading initial messages:", error);
+    }
+  }, [chatId, fetchMessages, setMessages, deduplicateMessages]);
+
+  const loadMoreMessages = useCallback(async () => {
+    if (loadingMore || !hasMoreMessages) return;
+
+    setLoadingMore(true);
+    try {
+      const nextPage = page + 1;
+      const newMessages = await fetchMessages(nextPage);
+      setMessages((prev) => deduplicateMessages([...newMessages, ...prev]));
+      setPage(nextPage);
+      setHasMoreMessages(newMessages.length >= PAGE_SIZE);
+    } catch (error) {
+      logger.error("Error loading more messages:", error);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMoreMessages, page, fetchMessages, deduplicateMessages, setMessages]);
+
+  const handleScroll = useCallback(
+    ({ nativeEvent }) => {
+      const { contentOffset } = nativeEvent;
+      setIsAtBottom(
+        contentOffset.y + nativeEvent.layoutMeasurement.height >=
+          nativeEvent.contentSize.height - 20
+      );
+
+      if (contentOffset.y <= 100 && !loadingMore && hasMoreMessages) {
+        loadMoreMessages();
+      }
+    },
+    [loadingMore, hasMoreMessages, loadMoreMessages]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      loadInitialMessages();
+      // Clear queued messages on reload to prevent automatic empty message sends
+      setQueuedMessages([]);
+      clearQueue();
+      return () => {
+        isMountedRef.current = false;
+      };
+    }, [loadInitialMessages, clearQueue])
+  );
+
+  const handleNewMessage = useCallback(
+    async (newMessage) => {
+      // Prevent adding empty messages
+      if (!newMessage.content && !newMessage.attachment_url) return;
+
+      const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+      const messages = cachedMessages ? JSON.parse(cachedMessages) : [];
+      const updatedMessages = deduplicateMessages([...messages, newMessage]);
+      await AsyncStorage.setItem(`chat-${chatId}-page-1`, JSON.stringify(updatedMessages));
+
+      setMessages((prev) => {
+        const updated = deduplicateMessages([...prev, newMessage]);
+        if (isAtBottom) {
+          setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+        }
+        return updated;
+      });
+    },
+    [chatId, isAtBottom, deduplicateMessages]
+  );
+
+  useEffect(() => {
+    const unsubscribers = [
+      subscribeToEvent("message", handleNewMessage),
+      subscribeToEvent("ack", async (event) => {
+        const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+        if (cachedMessages) {
+          const messages = JSON.parse(cachedMessages);
+          const updatedMessages = messages.map((msg) =>
+            msg.tempId === event.messageId ? { ...msg, id: event.serverId, tempId: null } : msg
+          );
+          await AsyncStorage.setItem(`chat-${chatId}-page-1`, JSON.stringify(deduplicateMessages(updatedMessages)));
+        }
+
+        setMessages((prev) => {
+          const updated = prev.map((msg) =>
+            msg.tempId === event.messageId ? { ...msg, id: event.serverId, tempId: null } : msg
+          );
+          return deduplicateMessages(updated);
+        });
+      }),
+      subscribeToEvent("reaction", async (event) => {
+        const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+        if (cachedMessages) {
+          const messages = JSON.parse(cachedMessages);
+          const updatedMessages = messages.map((m) =>
+            m.id === event.message_id
+              ? { ...m, reactions: [...(m.reactions || []), event.emoji] }
+              : m
+          );
+          await AsyncStorage.setItem(`chat-${chatId}-page-1`, JSON.stringify(deduplicateMessages(updatedMessages)));
+        }
+
+        setMessages((prev) => {
+          const updated = prev.map((m) =>
+            m.id === event.message_id
+              ? { ...m, reactions: [...(m.reactions || []), event.emoji] }
+              : m
+          );
+          return deduplicateMessages(updated);
+        });
+      }),
+      subscribeToEvent("pin", () => queryClient.invalidateQueries(["profile", chatId])),
+      subscribeToEvent("group_update", () => queryClient.invalidateQueries(["profile", chatId])),
+    ];
+    return () => unsubscribers.forEach((unsub) => unsub());
+  }, [subscribeToEvent, handleNewMessage, chatId, queryClient, deduplicateMessages]);
+
+  useEffect(() => {
+    if (isConnected && queuedMessages.length) {
+      const remaining = queuedMessages.filter((msg) => {
+        // Skip empty messages
+        if (!msg.content && !msg.attachment_url) {
+          logger.info("Skipping empty queued message:", msg);
+          return false;
+        }
+        return !sendMessage(msg);
+      });
+      if (isMountedRef.current) {
+        setQueuedMessages(deduplicateMessages(remaining));
+        if (!remaining.length) clearQueue();
+      }
+    }
+  }, [isConnected, queuedMessages, sendMessage, clearQueue, deduplicateMessages]);
+
   const { data: profile, isLoading: profileLoading } = useQuery({
     queryKey: ["profile", chatId, friendUsername],
     queryFn: async () => {
       const token = await AsyncStorage.getItem("token");
-      const url = isGroup ? `${API_URL}/chat/rooms/${chatId}/` : `${API_URL}/profiles/friend/${friendUsername}/`;
-      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
-      const data = res.data || {};
-      if (!isGroup) {
-        const lastSeen = data.last_seen ? new Date(data.last_seen) : null;
-        data.is_online = lastSeen && new Date() - lastSeen < 5 * 60 * 1000;
+      const url = isGroup
+        ? `${API_URL}/chat/rooms/${chatId}/`
+        : `${API_URL}/profiles/friend/${friendUsername}/`;
+      const { data } = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!isGroup && data.last_seen) {
+        data.is_online = isUserOnline(data.last_seen);
       }
-      console.log("[Debug] Profile fetched:", data.username || data.name);
       return data;
     },
     enabled: !!chatId && !!user,
     staleTime: 5 * 60 * 1000,
   });
 
-  // Token refresh wrapper
-  const withTokenRefresh = useCallback(
-    async (fn) => {
-      try {
-        return await fn();
-      } catch (error) {
-        if (error.response?.status === 401 && refreshToken) {
-          console.log("[Debug] Token expired, attempting refresh");
-          const newToken = await refreshToken();
-          if (newToken) {
-            await AsyncStorage.setItem("token", newToken);
-            return await fn();
-          }
+  const withTokenRefresh = useCallback(async (fn) => {
+    try {
+      return await fn();
+    } catch (error) {
+      if (error.response?.status === 401 && refreshToken && isMountedRef.current) {
+        const newToken = await refreshToken();
+        if (newToken) {
+          await AsyncStorage.setItem("token", newToken);
+          return await fn();
         }
-        throw error;
       }
-    },
-    [refreshToken]
-  );
+      throw error;
+    }
+  }, [refreshToken]);
 
-  // Mutations
   const markAsRead = useMutation({
     mutationFn: (messageIds) =>
       withTokenRefresh(async () => {
         const token = await AsyncStorage.getItem("token");
-        await Promise.all(
-          messageIds.map((id) =>
-            axios.post(`${API_URL}/chat/mark-as-read/${id}/`, {}, { headers: { Authorization: `Bearer ${token}` } })
-          )
+        await axios.post(
+          `${API_URL}/chat/mark-as-read/batch/`,
+          { message_ids: messageIds },
+          { headers: { Authorization: `Bearer ${token}` } }
         );
       }),
-    onSuccess: () => queryClient.invalidateQueries(["messages", chatId]),
+    onSuccess: async (_, messageIds) => {
+      queryClient.invalidateQueries(["messages", chatId]);
+      setMessages((prev) => {
+        const updatedMessages = prev.map((msg) => {
+          if (messageIds.includes(msg.id) && !msg.seen_by?.some((u) => u.id === user.id)) {
+            return {
+              ...msg,
+              seen_by: [...(msg.seen_by || []), { id: user.id, username: user.username }],
+            };
+          }
+          return msg;
+        });
+        return deduplicateMessages(updatedMessages);
+      });
+
+      const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+      if (cachedMessages) {
+        const messages = JSON.parse(cachedMessages);
+        const updatedMessages = messages.map((msg) => {
+          if (messageIds.includes(msg.id) && !msg.seen_by?.some((u) => u.id === user.id)) {
+            return {
+              ...msg,
+              seen_by: [...(msg.seen_by || []), { id: user.id, username: user.username }],
+            };
+          }
+          return msg;
+        });
+        await AsyncStorage.setItem(
+          `chat-${chatId}-page-1`,
+          JSON.stringify(deduplicateMessages(updatedMessages))
+        );
+      }
+    },
+    onError: (error) => logger.error("Error marking messages as read:", error),
   });
+
+  const markAsDelivered = useMutation({
+    mutationFn: (messageIds) =>
+      withTokenRefresh(async () => {
+        const token = await AsyncStorage.getItem("token");
+        await axios.post(
+          `${API_URL}/chat/mark-as-delivered/batch/`,
+          { message_ids: messageIds },
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+      }),
+    onSuccess: async (_, messageIds) => {
+      setMessages((prev) => {
+        const updatedMessages = prev.map((msg) => {
+          if (messageIds.includes(msg.id) && !msg.delivered_to?.some((u) => u.id === user.id)) {
+            return {
+              ...msg,
+              delivered_to: [...(msg.delivered_to || []), { id: user.id, username: user.username }],
+            };
+          }
+          return msg;
+        });
+        return deduplicateMessages(updatedMessages);
+      });
+
+      const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+      if (cachedMessages) {
+        const messages = JSON.parse(cachedMessages);
+        const updatedMessages = messages.map((msg) => {
+          if (messageIds.includes(msg.id) && !msg.delivered_to?.some((u) => u.id === user.id)) {
+            return {
+              ...msg,
+              delivered_to: [...(msg.delivered_to || []), { id: user.id, username: user.username }],
+            };
+          }
+          return msg;
+        });
+        await AsyncStorage.setItem(
+          `chat-${chatId}-page-1`,
+          JSON.stringify(deduplicateMessages(updatedMessages))
+        );
+      }
+
+      messageIds.forEach((messageId) => {
+        sendMessage({ type: "message_delivered", chat_id: chatId, message_id: messageId });
+      });
+    },
+    onError: (error) => logger.error("Error marking messages as delivered:", error),
+  });
+
+  const throttledMarkAsRead = useMemo(
+    () =>
+      debounce((messageIds) => {
+        if (isMountedRef.current) markAsRead.mutate(messageIds);
+      }, 1000),
+    [markAsRead]
+  );
+
+  const throttledMarkAsDelivered = useMemo(
+    () =>
+      debounce((messageIds) => {
+        if (isMountedRef.current) markAsDelivered.mutate(messageIds);
+      }, 1000),
+    [markAsDelivered]
+  );
+
+  useEffect(() => {
+    if (messages.length && isAtBottom) {
+      const undelivered = messages.filter(
+        (msg) => !msg.delivered_to?.some((u) => u.id === user.id) && msg.sender.id !== user.id
+      );
+      if (undelivered.length) throttledMarkAsDelivered(undelivered.map((msg) => msg.id));
+
+      const unread = messages.filter((msg) => !msg.seen_by?.some((u) => u.id === user.id));
+      if (unread.length) throttledMarkAsRead(unread.map((msg) => msg.id));
+    }
+    return () => {
+      throttledMarkAsDelivered.cancel();
+      throttledMarkAsRead.cancel();
+    };
+  }, [messages, isAtBottom, throttledMarkAsDelivered, throttledMarkAsRead]);
+
+  const handleSendMessage = useCallback(
+    async (type = "text", attachment) => {
+      // Stricter check to prevent sending empty messages
+      if (!message.trim() && !attachment) {
+        logger.info("Prevented sending empty message");
+        return;
+      }
+
+      let attachmentUrl = null;
+      if (attachment) {
+        const token = await AsyncStorage.getItem("token");
+        const formData = new FormData();
+        formData.append("file", {
+          uri: attachment.uri,
+          type: attachment.mimeType || "application/octet-stream",
+          name: attachment.fileName || `file_${Date.now()}`,
+        });
+
+        const { data } = await withTokenRefresh(() =>
+          axios.post(`${API_URL}/chat/upload-attachment/${chatId}/`, formData, {
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "multipart/form-data" },
+          })
+        );
+        attachmentUrl = data.attachment_url;
+      }
+
+      const tempId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+      const newMessage = {
+        id: tempId,
+        tempId,
+        sender: { id: user.id, username: user.username, profile_picture: user.profile_picture },
+        content: type === "text" && !editingMessageId ? message : "",
+        message_type: type,
+        attachment_url: attachmentUrl,
+        timestamp: new Date().toISOString(),
+        delivered_to: [],
+        seen_by: [],
+        is_deleted: false,
+        reactions: [],
+        isPinned: false,
+      };
+
+      setMessages((prev) => deduplicateMessages([...prev, newMessage]));
+      const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+      const messages = cachedMessages ? JSON.parse(cachedMessages) : [];
+      const updatedMessages = deduplicateMessages([...messages, newMessage]);
+      await AsyncStorage.setItem(`chat-${chatId}-page-1`, JSON.stringify(updatedMessages));
+
+      if (type === "text") setMessage("");
+      setPendingFile(null);
+
+      const payload = {
+        type: editingMessageId ? "edit" : "message",
+        content: type === "text" && !editingMessageId ? message : "",
+        message_type: type,
+        attachment_url: attachmentUrl,
+        ...(editingMessageId ? { message_id: editingMessageId } : { id: tempId }),
+      };
+
+      if (editingMessageId) {
+        editMessage.mutate({ messageId: editingMessageId, content: message });
+        sendMessage(payload);
+      } else {
+        if (!sendMessage(payload)) {
+          setQueuedMessages((prev) => deduplicateMessages([...prev, payload]));
+        }
+      }
+
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+    },
+    [message, chatId, editingMessageId, user, sendMessage, withTokenRefresh, deduplicateMessages]
+  );
 
   const editMessage = useMutation({
     mutationFn: ({ messageId, content }) =>
       withTokenRefresh(async () => {
         const token = await AsyncStorage.getItem("token");
-        const res = await axios.post(`${API_URL}/chat/edit-message/${messageId}/`, { content }, { headers: { Authorization: `Bearer ${token}` } });
-        return res.data;
-      }),
-    onSuccess: (updatedMessage) => {
-      setMessages((prev) => prev.map((m) => (m.id === updatedMessage.id ? updatedMessage : m)));
-      setEditingMessageId(null);
-      setMessage("");
-    },
-    onError: () => Alert.alert("Error", "Failed to edit message"),
-  });
-
-  const deleteMessage = useMutation({
-    mutationFn: (messageId) =>
-      withTokenRefresh(async () => {
-        const token = await AsyncStorage.getItem("token");
-        await axios.delete(`${API_URL}/chat/delete-message/${messageId}/`, { headers: { Authorization: `Bearer ${token}` } });
-      }),
-    onSuccess: (_, messageId) => {
-      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, is_deleted: true, content: "[Deleted]" } : m)));
-    },
-    onError: () => Alert.alert("Error", "Failed to delete message"),
-  });
-
-  const pinMessage = useMutation({
-    mutationFn: (messageId) =>
-      withTokenRefresh(async () => {
-        const token = await AsyncStorage.getItem("token");
-        await axios.post(`${API_URL}/chat/pin-message/${chatId}/${messageId}/`, {}, { headers: { Authorization: `Bearer ${token}` } });
-      }),
-    onSuccess: (_, messageId) => {
-      setMessages((prev) => prev.map((m) => ({ ...m, isPinned: m.id === messageId })));
-      queryClient.invalidateQueries(["profile", chatId]);
-    },
-  });
-
-  const addReaction = useMutation({
-    mutationFn: ({ messageId, emoji }) =>
-      withTokenRefresh(async () => {
-        const token = await AsyncStorage.getItem("token");
-        await axios.post(`${API_URL}/chat/react-to-message/${messageId}/`, { emoji }, { headers: { Authorization: `Bearer ${token}` } });
-      }),
-    onSuccess: (_, { messageId, emoji }) => {
-      setMessages((prev) =>
-        prev.map((m) => (m.id === messageId ? { ...m, reactions: [...(m.reactions || []), emoji] } : m))
-      );
-      setShowReactions(null);
-    },
-  });
-
-  // Sync queued messages
-  useEffect(() => {
-    if (isConnected && queuedMessages.length > 0) {
-      const remaining = queuedMessages.filter((msg) => !sendMessage(msg));
-      setQueuedMessages(remaining);
-      if (remaining.length === 0) clearQueue();
-      console.log("[Debug] Queued messages synced, remaining:", remaining.length);
-    }
-  }, [isConnected, queuedMessages, sendMessage, clearQueue]);
-
-  // Validate and mark unread messages
-  useEffect(() => {
-    if (!chatId || !user) {
-      navigation.goBack();
-      return;
-    }
-    if (fetchedMessages.length > 0 && isAtBottom) {
-      const unread = fetchedMessages.filter((msg) => !msg.seen_by?.some((u) => u.id === user.id));
-      if (unread.length > 0) {
-        markAsRead.mutate(unread.map((msg) => msg.id));
-        console.log("[Debug] Marking unread messages:", unread.length);
-      }
-    }
-  }, [chatId, user, fetchedMessages, markAsRead, navigation, isAtBottom]);
-
-  // WebSocket subscriptions
-  useEffect(() => {
-    const subscriptions = [
-      subscribeToEvent("ack", (event) => {
-        setMessages((prev) =>
-          prev.map((msg) => (msg.tempId === event.messageId ? { ...msg, id: event.serverId, tempId: null } : msg))
+        const { data } = await axios.post(
+          `${API_URL}/chat/edit-message/${messageId}/`,
+          { content },
+          { headers: { Authorization: `Bearer ${token}` } }
         );
+        return data;
       }),
-      subscribeToEvent("message", (event) => {
-        setMessages((prev) => deduplicateMessages([...prev, event.message]));
-        if (isAtBottom && event.message.sender.id !== user.id) {
-          markAsRead.mutate([event.message.id]);
-        }
-      }),
-      subscribeToEvent("reaction", (event) => {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === event.messageId ? { ...m, reactions: [...(m.reactions || []), event.emoji] } : m))
-        );
-      }),
-      subscribeToEvent("pin", () => queryClient.invalidateQueries(["profile", chatId])),
-      subscribeToEvent("group_update", () => queryClient.invalidateQueries(["profile", chatId])),
-    ];
-    return () => {
-      subscriptions.forEach((unsubscribe) => unsubscribe());
-      closeConnection();
-    };
-  }, [subscribeToEvent, setMessages, queryClient, chatId, user?.id, isAtBottom, markAsRead, deduplicateMessages, closeConnection]);
-
-  // Send message
-  const handleSend = useCallback(
-    async (type = "text", attachment, forwardId) => {
-      if (!message.trim() && !attachment && type !== "location") return;
-
-      try {
-        let attachmentUrl = null;
-        if (type === "image" && attachment) {
-          const token = await AsyncStorage.getItem("token");
-          const formData = new FormData();
-          formData.append("file", {
-            uri: attachment.uri,
-            type: attachment.type || "image/jpeg",
-            name: attachment.fileName || `attachment_${Date.now()}.jpg`,
-          });
-          const res = await withTokenRefresh(() =>
-            axios.post(`${API_URL}/chat/upload-attachment/${chatId}/`, formData, {
-              headers: { Authorization: `Bearer ${token}`, "Content-Type": "multipart/form-data" },
-            })
+    onSuccess: async (updatedMessage) => {
+      if (isMountedRef.current) {
+        const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+        if (cachedMessages) {
+          const messages = JSON.parse(cachedMessages);
+          const updatedMessages = messages.map((m) =>
+            m.id === updatedMessage.id ? updatedMessage : m
           );
-          attachmentUrl = res.data.file_url;
-        } else if (type === "location" && liveLocation) {
-          attachmentUrl = `geo:${liveLocation.latitude},${liveLocation.longitude}`;
+          await AsyncStorage.setItem(
+            `chat-${chatId}-page-1`,
+            JSON.stringify(deduplicateMessages(updatedMessages))
+          );
         }
 
-        const tempId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-        const payload = {
-          content: type === "text" ? message : "",
-          message_type: type,
-          attachment_url: attachmentUrl,
-          id: tempId,
-          forward_id: forwardId,
-        };
-
-        if (editingMessageId) {
-          editMessage.mutate({ messageId: editingMessageId, content: message });
-          sendMessage({ type: "edit", message_id: editingMessageId, content: message });
-          setEditingMessageId(null);
-          setMessage("");
-        } else {
-          const newMessage = {
-            id: tempId,
-            tempId,
-            sender: { id: user.id, username: user.username, profile_picture: user.profile_picture },
-            content: payload.content,
-            message_type: payload.message_type,
-            attachment_url: payload.attachment_url,
-            timestamp: new Date().toISOString(),
-            delivered_to: [],
-            seen_by: [],
-            is_deleted: false,
-            forwarded_from: forwardId ? messages.find((m) => m.id === forwardId) || null : null,
-            reactions: [],
-            isPinned: false,
-          };
-
-          setMessages((prev) => deduplicateMessages([...prev, newMessage]));
-          flatListRef.current?.scrollToEnd({ animated: true });
-          if (!sendMessage(payload)) {
-            setQueuedMessages((prev) => deduplicateMessages([...prev, payload]));
-          } else if (type === "text") {
-            setMessage("");
-          }
-        }
-      } catch (error) {
-        console.error("[Debug] Send error:", error.response?.data || error.message);
-        Alert.alert("Error", "Failed to send. Queued.");
-      } finally {
-        setPreviewImage(null);
-        if (type === "location") setLiveLocation(null);
+        setMessages((prev) => {
+          const updated = prev.map((m) => (m.id === updatedMessage.id ? updatedMessage : m));
+          return deduplicateMessages(updated);
+        });
+        setEditingMessageId(null);
+        setMessage("");
       }
     },
-    [message, sendMessage, chatId, editingMessageId, user, setMessages, messages, editMessage, withTokenRefresh, deduplicateMessages, liveLocation]
-  );
+  });
 
-  // Media picker
   const pickMedia = useCallback(async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") return Alert.alert("Permission required", "Please allow media access.");
+
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
       quality: 0.7,
     });
-    if (!result.canceled) setPreviewImage(result.assets[0].uri);
+
+    if (!result.canceled && result.assets?.[0]) {
+      const asset = result.assets[0];
+      setPendingFile({
+        uri: asset.uri,
+        mimeType: asset.type === "video" ? "video/mp4" : "image/jpeg",
+        fileName: asset.fileName || `media_${Date.now()}.${asset.type === "video" ? "mp4" : "jpg"}`,
+      });
+    }
   }, []);
 
-  // Live location sharing
-  const shareLiveLocation = useCallback(async () => {
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== "granted") return Alert.alert("Permission required", "Please allow location access.");
-    const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-    setLiveLocation({ latitude: location.coords.latitude, longitude: location.coords.longitude });
-    handleSend("location");
-  }, [handleSend]);
-
-  // Debounced typing
-  const debouncedTyping = useMemo(
-    () => debounce((text) => text && isConnected && sendMessage({ type: "typing", user: user?.id }), 300),
-    [isConnected, sendMessage, user?.id]
-  );
-
-  // Message actions
-  const handleEdit = useCallback((msg) => {
-    if (msg.sender.id === user?.id && !msg.is_deleted) {
-      setEditingMessageId(msg.id);
-      setMessage(msg.content);
-      inputRef.current?.focus();
+  const pickFile = useCallback(async () => {
+    const result = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true });
+    if (result.type !== "cancel" && isMountedRef.current) {
+      setPendingFile({
+        uri: result.uri,
+        fileName: result.name || `file_${Date.now()}`,
+        mimeType: result.mimeType || "application/octet-stream",
+      });
     }
-  }, [user?.id]);
+  }, []);
 
-  const handleDelete = useCallback(
-    (messageId) => {
-      if (messages.find((m) => m.id === messageId)?.sender.id === user?.id) {
-        Alert.alert("Delete Message", "Are you sure?", [
-          { text: "Cancel" },
-          {
-            text: "Delete",
-            onPress: () => {
-              deleteMessage.mutate(messageId);
-              sendMessage({ type: "delete", message_id: messageId });
-            },
-            style: "destructive",
-          },
-        ]);
+  const debouncedTypingRef = useRef(
+    debounce((text) => {
+      if (isMountedRef.current && isConnected) {
+        sendMessage({ type: "typing", user: user?.id });
       }
-    },
-    [messages, user?.id, deleteMessage, sendMessage]
+    }, 300, { leading: true, trailing: true })
   );
 
-  const handleForward = useCallback(
-    (messageId) => navigation.navigate("ForwardMessage", { messageId, currentChatId: chatId }),
-    [navigation, chatId]
-  );
+  const handleTyping = useCallback((text) => {
+    debouncedTypingRef.current(text);
+  }, []);
 
-  const handlePin = useCallback(
-    (messageId) => {
-      if (isGroup && profile?.admins?.some((admin) => admin.id === user.id)) {
-        pinMessage.mutate(messageId);
-        sendMessage({ type: "pin", message_id: messageId });
-      }
-    },
-    [isGroup, profile?.admins, user?.id, pinMessage, sendMessage]
-  );
-
-  const handleReact = useCallback(
-    (messageId, emoji) => {
-      addReaction.mutate({ messageId, emoji });
-      sendMessage({ type: "reaction", message_id: messageId, emoji });
-    },
-    [addReaction, sendMessage]
-  );
-
-  // Render message
   const renderMessage = useCallback(
     ({ item }) => {
-      const isSent = item.sender?.id === user?.id;
-      const seenBy = Array.isArray(item.seen_by) ? item.seen_by : [];
-      const deliveredTo = Array.isArray(item.delivered_to) ? item.delivered_to : [];
-      const reactions = Array.isArray(item.reactions) ? item.reactions : [];
-      const status = seenBy.length > (isGroup ? 1 : 0) ? "✓✓" : deliveredTo.length > (isGroup ? 1 : 0) ? "✓✓" : item.tempId ? "⌛" : "✓";
-      const isEdited = item.edited_at && new Date(item.edited_at) > new Date(item.timestamp);
+      const isSent = item.sender.id === user?.id;
+      const status = item.seen_by?.length > (isGroup ? 1 : 0) ? "✓✓" : item.delivered_to?.length > (isGroup ? 1 : 0) ? "✓" : item.tempId ? "⌛" : "✓";
+      const formattedTime = new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
       return (
-        <View style={tw`relative ${item.isPinned ? "bg-yellow-50" : ""} mx-2 my-1 rounded-lg`}>
+        <Animated.View
+          style={tw`flex-row ${isSent ? "justify-end" : "justify-start"} mx-4 my-1 opacity-${fadeAnim}`}
+        >
           <TouchableOpacity
-            style={tw`flex-row ${isSent ? "self-end" : "self-start"} items-${isSent ? "end" : "start"}`}
-            onLongPress={() =>
-              Alert.alert("Actions", "", [
-                ...(isSent && !item.is_deleted
-                  ? [
-                      { text: "Edit", onPress: () => handleEdit(item) },
-                      { text: "Delete", onPress: () => handleDelete(item.id) },
-                    ]
-                  : []),
-                { text: "Forward", onPress: () => handleForward(item.id) },
-                ...(isGroup && profile?.admins?.some((a) => a.id === user.id)
-                  ? [{ text: item.isPinned ? "Unpin" : "Pin", onPress: () => handlePin(item.id) }]
-                  : []),
-                { text: "React", onPress: () => setShowReactions(item.id) },
-                { text: "Cancel" },
-              ])
-            }
+            style={tw`rounded-lg p-3 max-w-[70%] ${
+              isSent ? "bg-blue-600 text-white shadow-md" : "bg-gray-100 text-gray-800 shadow-sm"
+            } ${item.isPinned ? "border-2 border-yellow-400" : ""}`}
+            onLongPress={() => showMessageActions(item)}
           >
             {!isSent && (
-              <Image
-                source={{ uri: item.sender?.profile_picture || PLACEHOLDER_IMAGE }}
-                style={tw`w-8 h-8 rounded-full mr-2`}
-              />
+              <Text style={tw`text-gray-600 text-xs mb-1`}>{item.sender.username}</Text>
             )}
-            <View style={tw`bg-${isSent ? "blue-100" : "white"} p-2 rounded-xl max-w-[70%] shadow-sm`}>
-              {!isSent && <Text style={tw`text-blue-600 text-xs font-semibold`}>{item.sender?.username || "Unknown"}</Text>}
-              {item.forwarded_from && (
-                <Text style={tw`text-gray-500 text-xs italic border-l-2 border-gray-300 pl-1`}>
-                  Forwarded from {item.forwarded_from.sender?.username || "Unknown"}
-                </Text>
-              )}
-              {item.message_type === "text" && (
-                <Text style={tw`text-gray-800 ${item.is_deleted ? "italic text-gray-500" : ""}`}>
-                  {item.content}
-                </Text>
-              )}
-              {item.message_type === "image" && (
-                <Image source={{ uri: item.attachment_url || PLACEHOLDER_IMAGE }} style={tw`w-40 h-40 rounded-md`} />
-              )}
-              {item.message_type === "location" && (
-                <Text style={tw`text-blue-500`}>Location: {item.attachment_url}</Text>
-              )}
-              <Text style={tw`text-gray-400 text-xs mt-1`}>
-                {new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                {isEdited && " (Edited)"}
-                {isSent && ` ${status}`}
+            {item.message_type === "text" && (
+              <Text style={tw`${isSent ? "text-white" : "text-gray-800"} ${item.is_deleted ? "italic text-gray-400" : ""}`}>
+                {item.content}
               </Text>
-              {reactions.length > 0 && (
-                <View style={tw`flex-row mt-1`}>
-                  {reactions.map((emoji, idx) => (
-                    <Text key={idx} style={tw`text-sm mr-1`}>
-                      {emoji}
-                    </Text>
-                  ))}
-                </View>
+            )}
+            {item.message_type === "image" && (
+              <Image source={{ uri: item.attachment_url || PLACEHOLDER_IMAGE }} style={tw`w-48 h-48 rounded-lg`} />
+            )}
+            {item.message_type === "video" && <VideoMessage uri={item.attachment_url} />}
+            {item.message_type === "file" && (
+              <Text style={tw`${isSent ? "text-blue-200" : "text-blue-500"} underline`}>
+                {item.attachment_url?.split('/').pop()}
+              </Text>
+            )}
+            <View style={tw`flex-row items-center justify-end mt-1`}>
+              <Text style={tw`text-xs ${isSent ? "text-blue-100" : "text-gray-500"} mr-1`}>
+                {formattedTime}
+              </Text>
+              {isSent && (
+                <Text style={tw`text-xs ${status === "✓✓" ? "text-blue-200" : "text-gray-300"}`}>{status}</Text>
               )}
             </View>
+            {item.reactions?.length > 0 && (
+              <View style={tw`flex-row mt-1 bg-gray-200 rounded-full px-2 py-1`}>
+                {item.reactions.map((emoji, idx) => (
+                  <Text key={idx} style={tw`text-sm mr-1`}>{emoji}</Text>
+                ))}
+              </View>
+            )}
           </TouchableOpacity>
           {showReactions === item.id && (
-            <View style={tw`absolute bottom-0 ${isSent ? "right-0" : "left-0"} bg-white p-2 rounded-lg shadow`}>
+            <View style={tw`absolute bottom-10 ${isSent ? "right-0" : "left-0"} bg-white p-2 rounded-xl shadow-md flex-row`}>
               {REACTION_EMOJIS.map((emoji) => (
-                <Pressable key={emoji} onPress={() => handleReact(item.id, emoji)} style={tw`p-1`}>
+                <Pressable
+                  key={emoji}
+                  onPress={() => handleReaction(item.id, emoji)}
+                  style={tw`p-1 mx-1`}
+                >
                   <Text style={tw`text-lg`}>{emoji}</Text>
                 </Pressable>
               ))}
             </View>
           )}
-        </View>
+        </Animated.View>
       );
     },
-    [user?.id, isGroup, profile?.admins, handleEdit, handleDelete, handleForward, handlePin, handleReact, showReactions]
+    [user?.id, isGroup, showReactions, fadeAnim]
   );
 
-  // Scroll tracking
-  const handleScroll = useCallback(({ nativeEvent }) => {
-    const isBottom = nativeEvent.contentOffset.y + nativeEvent.layoutMeasurement.height >= nativeEvent.contentSize.height - 20;
-    setIsAtBottom(isBottom);
-  }, []);
+  const showMessageActions = (item) => {
+    Alert.alert("Message Actions", "", [
+      ...(item.sender.id === user.id && !item.is_deleted
+        ? [
+            {
+              text: "Edit",
+              onPress: () => {
+                setEditingMessageId(item.id);
+                setMessage(item.content);
+                inputRef.current?.focus();
+              },
+            },
+            {
+              text: "Delete",
+              onPress: () => handleDeleteMessage(item.id),
+            },
+          ]
+        : []),
+      ...(isGroup && profile?.admins?.some((a) => a.id === user.id)
+        ? [
+            {
+              text: item.isPinned ? "Unpin" : "Pin",
+              onPress: () => {
+                pinMessage.mutate(item.id);
+                sendMessage({ type: "pin", message_id: item.id });
+              },
+            },
+          ]
+        : []),
+      { text: "React", onPress: () => setShowReactions(item.id) },
+      { text: "Cancel" },
+    ]);
+  };
 
-  // Filtered messages
-  const filteredMessages = useMemo(() => {
-    if (!searchFilter) return messages;
-    return messages.filter((msg) => msg.content?.toLowerCase().includes(searchFilter.toLowerCase()));
-  }, [messages, searchFilter]);
+  const pinMessage = useMutation({
+    mutationFn: (messageId) =>
+      withTokenRefresh(async () => {
+        const token = await AsyncStorage.getItem("token");
+        await axios.post(
+          `${API_URL}/chat/pin-message/${chatId}/${messageId}/`,
+          {},
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+      }),
+    onSuccess: async (_, messageId) => {
+      if (isMountedRef.current) {
+        const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+        if (cachedMessages) {
+          const messages = JSON.parse(cachedMessages);
+          const updatedMessages = messages.map((m) => ({
+            ...m,
+            isPinned: m.id === messageId,
+          }));
+          await AsyncStorage.setItem(
+            `chat-${chatId}-page-1`,
+            JSON.stringify(deduplicateMessages(updatedMessages))
+          );
+        }
 
-  // Memoized header
+        setMessages((prev) => {
+          const updated = prev.map((m) => ({ ...m, isPinned: m.id === messageId }));
+          return deduplicateMessages(updated);
+        });
+        queryClient.invalidateQueries(["profile", chatId]);
+      }
+    },
+  });
+
+  const handleDeleteMessage = async (messageId) => {
+    try {
+      const token = await AsyncStorage.getItem("token");
+      await axios.delete(`${API_URL}/chat/delete-message/${messageId}/`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+      if (cachedMessages) {
+        const messages = JSON.parse(cachedMessages);
+        const updatedMessages = messages.map((m) =>
+          m.id === messageId ? { ...m, is_deleted: true, content: "[Deleted]" } : m
+        );
+        await AsyncStorage.setItem(
+          `chat-${chatId}-page-1`,
+          JSON.stringify(deduplicateMessages(updatedMessages))
+        );
+      }
+
+      setMessages((prev) => {
+        const updated = prev.map((m) =>
+          m.id === messageId ? { ...m, is_deleted: true, content: "[Deleted]" } : m
+        );
+        return deduplicateMessages(updated);
+      });
+
+      sendMessage({ type: "delete", message_id: messageId });
+    } catch (error) {
+      logger.error("Error deleting message:", error);
+    }
+  };
+
+  const handleReaction = async (messageId, emoji) => {
+    try {
+      const token = await AsyncStorage.getItem("token");
+      await axios.post(
+        `${API_URL}/chat/react-to-message/${messageId}/`,
+        { emoji },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+      if (cachedMessages) {
+        const messages = JSON.parse(cachedMessages);
+        const updatedMessages = messages.map((m) =>
+          m.id === messageId ? { ...m, reactions: [...(m.reactions || []), emoji] } : m
+        );
+        await AsyncStorage.setItem(
+          `chat-${chatId}-page-1`,
+          JSON.stringify(deduplicateMessages(updatedMessages))
+        );
+      }
+
+      setMessages((prev) => {
+        const updated = prev.map((m) =>
+          m.id === messageId ? { ...m, reactions: [...(m.reactions || []), emoji] } : m
+        );
+        return deduplicateMessages(updated);
+      });
+      setShowReactions(null);
+      sendMessage({ type: "reaction", message_id: messageId, emoji });
+    } catch (error) {
+      logger.error("Error adding reaction:", error);
+    }
+  };
+
+  useEffect(() => {
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [fadeAnim]);
+
   const Header = useMemo(
     () => (
-      <View style={tw`p-2 bg-white border-b border-gray-200`}>
-        <View style={tw`flex-row items-center justify-between`}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={tw`p-2`}>
-            <Ionicons name="arrow-back" size={24} color="#333" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={tw`flex-row items-center flex-1`}
-            onPress={() => navigation.navigate(isGroup ? "GroupProfile" : "FriendProfile", { chatId, username: friendUsername })}
-          >
-            <Image
-              source={{ uri: profile?.profile_picture || PLACEHOLDER_IMAGE }}
-              style={tw`w-10 h-10 rounded-full mr-2`}
-            />
-            <View style={tw`flex-1`}>
-              <Text style={tw`text-lg font-semibold text-gray-800`}>
-                {isGroup ? profile?.name || `Group ${chatId}` : profile?.username || friendUsername}
-              </Text>
-              {!isGroup && (
-                <Text style={tw`text-xs ${profile?.is_online ? "text-green-500" : "text-gray-500"}`}>
-                  {profile?.is_online ? "Online" : profile?.last_seen ? `Last seen ${new Date(profile.last_seen).toLocaleTimeString()}` : ""}
-                </Text>
-              )}
-            </View>
-          </TouchableOpacity>
-          <View style={tw`flex-row items-center`}>
-            <TouchableOpacity onPress={shareLiveLocation} style={tw`p-2`}>
-              <Ionicons name="location" size={24} color="#007AFF" />
-            </TouchableOpacity>
-            <Text style={tw`text-xs ${lastError ? "text-red-500" : "text-gray-500"} capitalize mr-2`}>
-              {lastError || (isConnected ? "Connected" : connectionStatus)}
+      <View style={tw`bg-white border-b border-gray-200 flex-row items-center px-3 py-2 shadow-sm`}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={tw`mr-2`}>
+          <Ionicons name="arrow-back" size={24} color="#000" />
+        </TouchableOpacity>
+        <View style={tw`flex-1`}>
+          <Text style={tw`text-lg font-semibold text-gray-800`}>
+            {isGroup ? profile?.name || `Group ${chatId}` : profile?.username || friendUsername}
+          </Text>
+          {!isGroup && (
+            <Text style={tw`text-sm text-gray-500`}>
+              {profile?.is_online
+                ? "Online"
+                : profile?.last_seen
+                ? `Last seen ${new Date(profile.last_seen).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}`
+                : ""}
             </Text>
-          </View>
+          )}
         </View>
-        <TextInput
-          style={tw`bg-gray-200 rounded-full px-3 py-1 mt-2`}
-          placeholder="Search messages..."
-          value={searchFilter}
-          onChangeText={setSearchFilter}
-        />
       </View>
     ),
-    [navigation, isGroup, chatId, friendUsername, profile, lastError, connectionStatus, isConnected, shareLiveLocation, searchFilter]
+    [navigation, isGroup, chatId, friendUsername, profile]
   );
 
-  if (authLoading || messagesLoading || profileLoading) {
-    return <ActivityIndicator size="large" color="#007AFF" style={tw`flex-1 justify-center`} />;
+  if (authLoading || profileLoading) {
+    return (
+      <View style={tw`flex-1 justify-center items-center bg-gray-50`}>
+        <ActivityIndicator size="large" color="#3B82F6" />
+      </View>
+    );
   }
 
   return (
-    <View style={tw`flex-1 bg-gray-100`}>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      style={tw`flex-1 bg-gray-50`}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+    >
       {Header}
       {profile?.pinned_message && (
-        <View style={tw`bg-yellow-50 p-2 border-b border-gray-200 flex-row items-center`}>
-          <Ionicons name="pin" size={16} color="#666" style={tw`mr-1`} />
+        <View style={tw`bg-yellow-50 p-3 border-b border-gray-200 flex-row items-center mx-4 rounded-lg shadow-sm`}>
+          <Ionicons name="pin" size={16} color="#666" style={tw`mr-2`} />
           <Text style={tw`text-sm text-gray-700 flex-1`}>{profile.pinned_message.content}</Text>
         </View>
       )}
       <FlatList
         ref={flatListRef}
-        data={filteredMessages}
+        data={messages}
         renderItem={renderMessage}
-        keyExtractor={(item) => item.id || item.tempId || `${Date.now()}-${Math.random()}`}
-        onContentSizeChange={() => isAtBottom && flatListRef.current?.scrollToEnd({ animated: false })}
+        keyExtractor={(item) => item.id || item.tempId}
         onScroll={handleScroll}
         scrollEventThrottle={16}
-        initialNumToRender={20}
+        contentContainerStyle={tw`pb-2 flex-grow px-2`}
         ListEmptyComponent={<Text style={tw`text-center mt-5 text-gray-500`}>No messages yet</Text>}
-        contentContainerStyle={tw`pb-2 flex-grow`}
+        ListHeaderComponent={
+          loadingMore ? (
+            <View style={tw`py-4 justify-center items-center`}>
+              <ActivityIndicator size="small" color="#3B82F6" />
+            </View>
+          ) : null
+        }
+        onContentSizeChange={() => {
+          if (isAtBottom) {
+            flatListRef.current?.scrollToEnd({ animated: false });
+          }
+        }}
       />
       {typingUsers.length > 0 && (
-        <Text style={tw`text-xs text-gray-500 p-1 bg-gray-200`}>
+        <Text style={tw`text-xs text-gray-500 p-2 mx-4 mb-2 italic`}>
           {isGroup ? `${typingUsers.join(", ")} typing...` : `${friendUsername} is typing...`}
         </Text>
       )}
       {!isAtBottom && (
         <TouchableOpacity
-          style={tw`absolute bottom-16 right-4 bg-blue-500 p-2 rounded-full shadow`}
+          style={tw`absolute bottom-16 right-4 bg-blue-600 p-3 rounded-full shadow-lg`}
           onPress={() => flatListRef.current?.scrollToEnd({ animated: true })}
         >
           <Ionicons name="chevron-down" size={20} color="white" />
         </TouchableOpacity>
       )}
-      <View style={tw`bg-white border-t border-gray-200 p-2`}>
-        <View style={tw`flex-row items-center`}>
-          <TouchableOpacity onPress={pickMedia} style={tw`p-2`}>
-            <Ionicons name="image" size={24} color="#007AFF" />
-          </TouchableOpacity>
-          <TextInput
-            ref={inputRef}
-            style={tw`flex-1 bg-gray-200 rounded-full px-3 py-1 mx-2 text-base`}
-            value={message}
-            onChangeText={(text) => {
-              setMessage(text);
-              debouncedTyping(text);
-            }}
-            placeholder={editingMessageId ? "Edit message..." : "Type a message..."}
-            multiline
-            maxLength={1000}
-          />
-          <TouchableOpacity onPress={() => handleSend("text")} style={tw`p-2`}>
-            <Ionicons name={editingMessageId ? "checkmark" : "send"} size={24} color="#007AFF" />
-          </TouchableOpacity>
-        </View>
+      <View style={tw`bg-white border-t border-gray-200 p-2 flex-row items-center shadow-md`}>
+        <TouchableOpacity onPress={pickMedia} style={tw`p-2`}>
+          <Ionicons name="image" size={24} color="#3B82F6" />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={pickFile} style={tw`p-2`}>
+          <Ionicons name="attach" size={24} color="#3B82F6" />
+        </TouchableOpacity>
+        <TextInput
+          ref={inputRef}
+          style={tw`flex-1 bg-gray-100 rounded-full px-4 py-2 mx-2 text-gray-800 shadow-sm`}
+          value={message}
+          onChangeText={(text) => {
+            setMessage(text);
+            handleTyping(text);
+          }}
+          placeholder={editingMessageId ? "Edit message..." : "Type a message..."}
+          placeholderTextColor="#9CA3AF"
+          multiline
+          maxLength={1000}
+          onSubmitEditing={() => handleSendMessage("text")}
+        />
+        <TouchableOpacity onPress={() => handleSendMessage("text")} style={tw`p-2`}>
+          <Ionicons name={editingMessageId ? "checkmark" : "send"} size={24} color="#3B82F6" />
+        </TouchableOpacity>
       </View>
-      <Modal visible={!!previewImage} transparent animationType="fade">
-        <View style={tw`flex-1 bg-black bg-opacity-80 justify-center items-center`}>
-          <Image source={{ uri: previewImage }} style={tw`w-80 h-80 rounded-lg`} resizeMode="contain" />
-          <View style={tw`flex-row mt-4`}>
-            <TouchableOpacity onPress={() => setPreviewImage(null)} style={tw`p-2 mx-2`}>
-              <Ionicons name="close" size={32} color="white" />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => handleSend("image", { uri: previewImage })} style={tw`p-2 mx-2`}>
-              <Ionicons name="send" size={32} color="white" />
-            </TouchableOpacity>
+      {pendingFile && (
+        <Modal visible={true} transparent animationType="fade" onRequestClose={() => setPendingFile(null)}>
+          <View style={tw`flex-1 bg-black bg-opacity-80 justify-center items-center`}>
+            {pendingFile.mimeType?.startsWith("image/") ? (
+              <Image source={{ uri: pendingFile.uri }} style={tw`w-80 h-80 rounded-lg`} resizeMode="contain" />
+            ) : pendingFile.mimeType?.startsWith("video/") ? (
+              <VideoMessage uri={pendingFile.uri} />
+            ) : (
+              <Text style={tw`text-white text-lg`}>{pendingFile.fileName}</Text>
+            )}
+            <View style={tw`flex-row mt-4`}>
+              <TouchableOpacity onPress={() => setPendingFile(null)} style={tw`p-2 mx-2`}>
+                <Ionicons name="close" size={32} color="white" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  const type = pendingFile.mimeType?.startsWith("image/")
+                    ? "image"
+                    : pendingFile.mimeType?.startsWith("video/")
+                    ? "video"
+                    : "file";
+                  handleSendMessage(type, pendingFile);
+                }}
+                style={tw`p-2 mx-2`}
+              >
+                <Ionicons name="send" size={32} color="white" />
+              </TouchableOpacity>
+            </View>
           </View>
-        </View>
-      </Modal>
-    </View>
+        </Modal>
+      )}
+    </KeyboardAvoidingView>
   );
 };
 

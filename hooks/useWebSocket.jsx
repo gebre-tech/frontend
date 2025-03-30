@@ -1,369 +1,247 @@
+// hooks/useWebSocket.jsx
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-/**
- * @typedef {'connecting' | 'connected' | 'failed' | 'closed'} ConnectionStatusEnum
- */
-
-/** @type {Record<ConnectionStatusEnum, ConnectionStatusEnum>} */
+// Connection status enum
 export const ConnectionStatus = {
   CONNECTING: "connecting",
   CONNECTED: "connected",
   FAILED: "failed",
   CLOSED: "closed",
+  RECONNECTING: "reconnecting",
 };
 
-/**
- * @typedef {Object} WebSocketMessage
- * @property {string} [id] - Temporary client-side ID
- * @property {string} [content] - Message content
- * @property {string} [message_type] - Type of message (e.g., "text", "image")
- * @property {string} [attachment_url] - URL of attachment
- * @property {string} [forward_id] - ID of forwarded message
- * @property {string} [type] - Event type (e.g., "typing", "edit")
- */
-
-/**
- * @typedef {Object} UseWebSocketOptions
- * @property {string} chatId - The chat room ID
- * @property {boolean} isGroup - Whether it's a group chat
- * @property {string} [userId] - The authenticated user's ID
- * @property {number} [maxReconnectAttempts] - Max reconnection attempts (default: 5)
- * @property {number} [baseReconnectDelay] - Base delay in ms for reconnection (default: 1000)
- */
-
-/**
- * Custom Event Emitter for WebSocket events
- * @class
- */
+// Simple EventEmitter class
 class EventEmitter {
   constructor() {
     this.listeners = new Map();
   }
-
-  /** @param {string} event @param {(data: any) => void} callback */
   on(event, callback) {
     const callbacks = this.listeners.get(event) || new Set();
     callbacks.add(callback);
     this.listeners.set(event, callbacks);
     return () => callbacks.delete(callback);
   }
-
-  /** @param {string} event @param {any} data */
   emit(event, data) {
-    const callbacks = this.listeners.get(event) || new Set();
-    callbacks.forEach((callback) => callback(data));
+    this.listeners.get(event)?.forEach((cb) => cb(data));
   }
 }
 
-/**
- * @param {UseWebSocketOptions} options
- * @returns {Object} WebSocket utilities and state
- */
-export const useWebSocket = ({
-  chatId,
-  isGroup,
-  userId,
-  maxReconnectAttempts = 5,
-  baseReconnectDelay = 1000,
-}) => {
+export const useWebSocket = ({ chatId, isGroup, userId }) => {
   const [messages, setMessages] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState(ConnectionStatus.CONNECTING);
   const [lastError, setLastError] = useState(null);
   const [typingUsers, setTypingUsers] = useState([]);
+
   const ws = useRef(null);
   const eventEmitter = useRef(new EventEmitter());
   const pingInterval = useRef(null);
   const reconnectTimeout = useRef(null);
   const reconnectAttempts = useRef(0);
   const messageQueue = useRef([]);
-  const connectionTimeout = useRef(null);
-  const isConnecting = useRef(false);
-  const lastMessageTimestamp = useRef(null);
+  const isMountedRef = useRef(true);
 
   const url = useMemo(
-    () => `${isGroup ? "ws://127.0.0.1:8000/ws/group_chat" : "ws://127.0.0.1:8000/ws/chat"}/${chatId}/`,
+    () =>
+      `${isGroup ? "ws://127.0.0.1:8000/ws/group_chat" : "ws://127.0.0.1:8000/ws/chat"}/${chatId}/`,
     [chatId, isGroup]
   );
 
-  // Load queued messages from AsyncStorage
   const loadQueue = useCallback(async () => {
     try {
       const stored = await AsyncStorage.getItem(`ws_queue_${chatId}`);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        messageQueue.current = Array.isArray(parsed) ? parsed : [];
-      }
+      if (stored) messageQueue.current = JSON.parse(stored);
     } catch (error) {
-      console.error("Failed to load WebSocket queue:", error);
-      messageQueue.current = [];
+      console.error("[useWebSocket] Failed to load queue:", error);
     }
   }, [chatId]);
 
-  // Save queue to AsyncStorage
   const saveQueue = useCallback(async () => {
     try {
       await AsyncStorage.setItem(`ws_queue_${chatId}`, JSON.stringify(messageQueue.current));
     } catch (error) {
-      console.error("Failed to save WebSocket queue:", error);
+      console.error("[useWebSocket] Failed to save queue:", error);
     }
   }, [chatId]);
 
-  // Connect to WebSocket
   const connect = useCallback(async () => {
-    if (isConnecting.current || (ws.current && ws.current.readyState === WebSocket.OPEN)) return;
-    if (reconnectAttempts.current >= maxReconnectAttempts) {
-      setLastError(`Max reconnection attempts (${maxReconnectAttempts}) reached`);
+    if (ws.current?.readyState === WebSocket.OPEN) return;
+    if (reconnectAttempts.current >= 5) {
       setConnectionStatus(ConnectionStatus.FAILED);
+      console.error("[useWebSocket] Max reconnect attempts reached");
       return;
     }
 
-    isConnecting.current = true;
-    setConnectionStatus(ConnectionStatus.CONNECTING);
-    setLastError(null);
+    setConnectionStatus(
+      reconnectAttempts.current > 0 ? ConnectionStatus.RECONNECTING : ConnectionStatus.CONNECTING
+    );
 
     const token = await AsyncStorage.getItem("token");
     if (!token) {
       setLastError("Authentication token missing");
       setConnectionStatus(ConnectionStatus.FAILED);
-      isConnecting.current = false;
+      console.error("[useWebSocket] No token available");
       return;
     }
 
     ws.current = new WebSocket(`${url}?token=${token}`);
 
-    connectionTimeout.current = setTimeout(() => {
-      if (ws.current?.readyState !== WebSocket.OPEN) {
-        ws.current.close();
-        setLastError("Connection timed out after 5s");
-        reconnect();
-      }
-    }, 5000);
-
     ws.current.onopen = () => {
-      console.log(`WebSocket connected for chat ${chatId}`);
+      if (!isMountedRef.current) return;
       setIsConnected(true);
       setConnectionStatus(ConnectionStatus.CONNECTED);
-      clearTimeout(connectionTimeout.current);
+      setLastError(null);
       reconnectAttempts.current = 0;
-      isConnecting.current = false;
+      console.log("[useWebSocket] WebSocket connected");
 
       pingInterval.current = setInterval(() => {
         if (ws.current?.readyState === WebSocket.OPEN) {
           ws.current.send(JSON.stringify({ type: "ping" }));
+        } else {
+          clearInterval(pingInterval.current);
         }
-      }, 15000);
+      }, 30000); // Ping every 30 seconds
 
-      while (messageQueue.current.length > 0 && ws.current.readyState === WebSocket.OPEN) {
-        const msg = messageQueue.current.shift();
-        ws.current.send(JSON.stringify(msg));
+      if (messageQueue.current.length) {
+        messageQueue.current.forEach((msg) => {
+          if (ws.current?.readyState === WebSocket.OPEN) {
+            ws.current.send(JSON.stringify(msg));
+          }
+        });
+        messageQueue.current = [];
+        saveQueue();
       }
-      saveQueue();
     };
 
     ws.current.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.error) {
-          setLastError(data.error);
-          if (data.error.includes("token") || data.error.includes("auth")) {
-            ws.current.close();
-            reconnectAttempts.current = 0;
-            connect();
-          }
-          return;
-        }
+      if (!isMountedRef.current) return;
+      const data = JSON.parse(event.data);
+      if (data.error) {
+        setLastError(data.error);
+        console.error("[useWebSocket] Server error:", data.error);
+        if (data.error.includes("token")) ws.current.close(4003, "Auth failed");
+        return;
+      }
 
-        switch (data.type) {
-          case "message":
-          case undefined:
-            if (!lastMessageTimestamp.current || new Date(data.message.timestamp) > lastMessageTimestamp.current) {
-              setMessages((prev) => {
-                const exists = prev.some((m) => m.id === data.message.id);
-                const updated = exists
-                  ? prev.map((m) => (m.id === data.message.id ? data.message : m))
-                  : [...prev, data.message];
-                return updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-              });
-              lastMessageTimestamp.current = new Date(data.message.timestamp);
-            }
-            eventEmitter.current.emit("message", data);
-            break;
-          case "typing":
-            if (data.user !== userId) {
-              setTypingUsers((prev) => {
-                const updated = [...new Set([...prev, data.username])];
-                setTimeout(() => setTypingUsers((current) => current.filter((u) => u !== data.username)), 2000);
-                return updated;
-              });
-            }
-            eventEmitter.current.emit("typing", data);
-            break;
-          case "ack":
+      switch (data.type) {
+        case "ack":
+          eventEmitter.current.emit("ack", data);
+          break;
+        case "typing":
+          if (data.user !== userId) {
+            setTypingUsers((prev) =>
+              [...new Set([...prev, data.username])].slice(-3)
+            );
+            setTimeout(() => {
+              if (isMountedRef.current) {
+                setTypingUsers((prev) => prev.filter((u) => u !== data.username));
+              }
+            }, 5000); // Clear typing after 5 seconds
+          }
+          break;
+        case "pong":
+          break;
+        case "reaction":
+        case "pin":
+        case "group_update":
+          eventEmitter.current.emit(data.type, data);
+          break;
+        default:
+          if (data.message) {
             setMessages((prev) =>
-              prev.map((msg) =>
-                msg.tempId === data.messageId ? { ...msg, id: data.serverId, tempId: null } : msg
+              [...prev.filter((m) => m.id !== data.message.id), data.message].sort((a, b) =>
+                a.timestamp.localeCompare(b.timestamp)
               )
             );
-            eventEmitter.current.emit("ack", data);
-            break;
-          case "pong":
-            break;
-          default:
-            eventEmitter.current.emit(data.type, data);
-            break;
-        }
-      } catch (error) {
-        console.error("WebSocket message parsing error:", error);
-        setLastError("Invalid server message");
+          }
       }
     };
 
     ws.current.onerror = (error) => {
-      console.error("WebSocket error:", error);
-      setLastError("Connection error");
+      if (!isMountedRef.current) return;
+      setLastError("WebSocket connection failed");
+      setConnectionStatus(ConnectionStatus.FAILED);
       setIsConnected(false);
-      isConnecting.current = false;
+      console.error("[useWebSocket] WebSocket error:", error);
     };
 
     ws.current.onclose = (event) => {
-      console.log(`WebSocket closed for chat ${chatId} with code ${event.code}`);
+      if (!isMountedRef.current) return;
       setIsConnected(false);
       setConnectionStatus(ConnectionStatus.CLOSED);
       clearInterval(pingInterval.current);
-      clearTimeout(connectionTimeout.current);
-      isConnecting.current = false;
+      console.log("[useWebSocket] WebSocket closed:", event.code, event.reason);
 
-      if (event.code !== 1000) {
-        reconnect();
+      if (event.code !== 1000 && reconnectAttempts.current < 5) {
+        const delay = Math.min(5000 * Math.pow(2, reconnectAttempts.current), 60000); // Start at 5s, cap at 60s
+        console.log(`[useWebSocket] Reconnecting in ${delay}ms`);
+        reconnectTimeout.current = setTimeout(() => {
+          reconnectAttempts.current += 1;
+          connect();
+        }, delay);
       }
     };
-  }, [chatId, userId, url, maxReconnectAttempts, baseReconnectDelay, saveQueue]);
+  }, [chatId, userId, url, saveQueue]);
 
-  // Reconnection logic with exponential backoff
-  const reconnect = useCallback(() => {
-    if (reconnectAttempts.current >= maxReconnectAttempts) {
-      setLastError(`Max reconnection attempts (${maxReconnectAttempts}) reached`);
-      setConnectionStatus(ConnectionStatus.FAILED);
-      return;
+  const sendMessage = useCallback((message) => {
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify(message));
+      return true;
+    } else {
+      messageQueue.current.push(message);
+      saveQueue();
+      return false;
     }
-    const jitter = Math.random() * 500;
-    const delay = baseReconnectDelay * Math.pow(2, reconnectAttempts.current) + jitter;
-    console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts.current + 1})`);
-    reconnectTimeout.current = setTimeout(() => {
-      reconnectAttempts.current += 1;
-      connect();
-    }, delay);
-  }, [connect, maxReconnectAttempts, baseReconnectDelay]);
+  }, []);
 
-  // Retry connection manually
-  const retryConnection = useCallback(() => {
-    if (!isConnected && !isConnecting.current) {
-      reconnectAttempts.current = 0;
-      connect();
-    }
-  }, [connect, isConnected]);
-
-  // Send message with queueing
-  const sendMessage = useCallback(
-    /** @param {WebSocketMessage} message @returns {boolean} */
-    (message) => {
-      if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
-        if (!Array.isArray(messageQueue.current)) {
-          console.warn("messageQueue.current is not an array, resetting...");
-          messageQueue.current = [];
-        }
-        if (!messageQueue.current.some((m) => m.id === message.id)) {
-          messageQueue.current.push(message);
-          saveQueue();
-        }
-        setLastError("Not connected, message queued");
-        retryConnection();
-        return false;
-      }
-      try {
-        ws.current.send(JSON.stringify(message));
-        return true;
-      } catch (error) {
-        console.error("Failed to send WebSocket message:", error);
-        if (!Array.isArray(messageQueue.current)) {
-          console.warn("messageQueue.current is not an array, resetting...");
-          messageQueue.current = [];
-        }
-        if (!messageQueue.current.some((m) => m.id === message.id)) {
-          messageQueue.current.push(message);
-          saveQueue();
-        }
-        setLastError("Send failed, message queued");
-        retryConnection();
-        return false;
-      }
-    },
-    [saveQueue, retryConnection]
-  );
-
-  // Close connection
   const closeConnection = useCallback(() => {
-    if (ws.current && ws.current.readyState !== WebSocket.CLOSED) {
-      ws.current.close(1000, "Manual closure");
+    if (ws.current) {
+      ws.current.close(1000, "Component unmounted");
     }
     clearInterval(pingInterval.current);
     clearTimeout(reconnectTimeout.current);
-    clearTimeout(connectionTimeout.current);
-    reconnectAttempts.current = 0;
-    setConnectionStatus(ConnectionStatus.CLOSED);
-    setIsConnected(false);
   }, []);
 
-  // Subscribe to events
-  const subscribeToEvent = useCallback(
-    /**
-     * @param {string} eventType
-     * @param {(data: any) => void} callback
-     * @returns {() => void}
-     */
-    (eventType, callback) => eventEmitter.current.on(eventType, callback),
-    []
-  );
+  const subscribeToEvent = useCallback((event, callback) => {
+    return eventEmitter.current.on(event, callback);
+  }, []);
 
-  // Clear message queue
-  const clearQueue = useCallback(async () => {
+  const clearQueue = useCallback(() => {
     messageQueue.current = [];
-    await saveQueue();
+    saveQueue();
   }, [saveQueue]);
 
-  // Manage lifecycle
+  const retryConnection = useCallback(() => {
+    reconnectAttempts.current = 0;
+    connect();
+  }, [connect]);
+
   useEffect(() => {
+    isMountedRef.current = true;
     if (chatId && userId) {
       loadQueue().then(connect);
     }
-    return () => {
-      if (ws.current && ws.current.readyState !== WebSocket.CLOSED) {
-        ws.current.close(1000, "Component unmounted");
-      }
-      clearInterval(pingInterval.current);
-      clearTimeout(reconnectTimeout.current);
-      clearTimeout(connectionTimeout.current);
-      reconnectAttempts.current = 0;
-    };
-  }, [chatId, userId, connect, loadQueue]);
 
-  return useMemo(
-    () => ({
-      messages,
-      setMessages,
-      sendMessage,
-      isConnected,
-      typingUsers,
-      connectionStatus,
-      lastError,
-      closeConnection,
-      subscribeToEvent,
-      clearQueue,
-      retryConnection,
-      ConnectionStatus,
-    }),
-    [messages, isConnected, typingUsers, connectionStatus, lastError, sendMessage, closeConnection, subscribeToEvent, clearQueue, retryConnection]
-  );
+    return () => {
+      isMountedRef.current = false;
+      closeConnection();
+      console.log("[useWebSocket] Cleanup completed");
+    };
+  }, [chatId, userId, connect, loadQueue, closeConnection]);
+
+  return {
+    messages,
+    setMessages,
+    sendMessage,
+    isConnected,
+    typingUsers,
+    connectionStatus,
+    lastError,
+    closeConnection,
+    subscribeToEvent,
+    clearQueue,
+    retryConnection,
+  };
 };
+

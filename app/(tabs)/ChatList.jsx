@@ -16,9 +16,11 @@ import { useNavigation } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import tw from "twrnc";
+import { useWebSocket } from "../../hooks/useWebSocket";
 
 const API_URL = "http://127.0.0.1:8000";
-const INITIAL_CHAT_LIMIT = 5; // Limit to top 5 chats initially
+const INITIAL_CHAT_LIMIT = 5;
+const PLACEHOLDER_IMAGE = "https://via.placeholder.com/40";
 
 const ChatList = () => {
   const { user } = useContext(AuthContext);
@@ -26,10 +28,18 @@ const ChatList = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const navigation = useNavigation();
-  const wsRef = useRef(null);
-  const [highlightedChatIds, setHighlightedChatIds] = useState(new Set()); // Track chats with recent activity
-
+  const [highlightedChatIds, setHighlightedChatIds] = useState(new Set());
   const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  // Use the useWebSocket hook in global mode
+  const {
+    onlineUsers,
+    newMessageNotifications,
+    clearNotifications,
+    subscribeToEvent,
+    isConnected,
+    retryConnection,
+  } = useWebSocket({ userId: user?.id, isGlobal: true });
 
   const fetchChats = useCallback(async () => {
     try {
@@ -47,17 +57,34 @@ const ChatList = () => {
 
       const enhancedChats = await Promise.all(
         (response.data || []).map(async (chat) => {
+          const updatedMembers = await Promise.all(
+            chat.members.map(async (member) => {
+              if (!member.profile_picture) {
+                try {
+                  const profileResponse = await axios.get(
+                    `${API_URL}/profiles/friend/${member.username}/`,
+                    { headers: { Authorization: `Bearer ${token}` } }
+                  );
+                  return { ...member, profile_picture: profileResponse.data.profile_picture };
+                } catch (error) {
+                  console.error(`Error fetching profile for ${member.username}:`, error);
+                  return { ...member, profile_picture: PLACEHOLDER_IMAGE };
+                }
+              }
+              return member;
+            })
+          );
+
           const cachedMessages = await AsyncStorage.getItem(`chat-${chat.id}-page-1`);
           if (cachedMessages) {
             const messages = JSON.parse(cachedMessages);
             if (messages.length > 0) {
               return {
                 ...chat,
+                members: updatedMembers,
                 last_message: messages[messages.length - 1],
                 unread_count: messages.filter(
-                  (m) =>
-                    !m.seen_by?.some((u) => u.id === user.id) &&
-                    m.sender.id !== user.id
+                  (m) => !m.seen_by?.some((u) => u.id === user.id) && m.sender.id !== user.id
                 ).length,
                 delivered_count: messages.filter(
                   (m) => m.delivered_to?.length > 0 && !m.seen_by?.length
@@ -65,7 +92,7 @@ const ChatList = () => {
               };
             }
           }
-          return chat;
+          return { ...chat, members: updatedMembers };
         })
       );
 
@@ -77,11 +104,7 @@ const ChatList = () => {
 
       setChats(sortedChats.slice(0, INITIAL_CHAT_LIMIT));
       await AsyncStorage.setItem("cached-chats", JSON.stringify(sortedChats));
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 500,
-        useNativeDriver: true,
-      }).start();
+      Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
     } catch (error) {
       console.error("Fetch chats error:", error);
       Alert.alert("Error", error.message || "Failed to fetch chats");
@@ -91,134 +114,105 @@ const ChatList = () => {
     }
   }, [fadeAnim, user?.id]);
 
-  const setupWebSocket = useCallback(async () => {
-    const token = await AsyncStorage.getItem("token");
-    if (!token) return;
-
-    const ws = new WebSocket(`ws://127.0.0.1:8000/ws/contacts/?token=${token}`);
-    wsRef.current = ws;
-
-    ws.onopen = () => console.log("ChatList WebSocket connected");
-
-    ws.onmessage = async (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        console.log("ChatList WebSocket message:", data);
-
-        if (data.type === "chat_message") {
-          const newMessage = data.message;
-          const chatId = newMessage.chat.id;
-
-          const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
-          const messages = cachedMessages ? JSON.parse(cachedMessages) : [];
-          const updatedMessages = [...messages, newMessage];
-          await AsyncStorage.setItem(`chat-${chatId}-page-1`, JSON.stringify(updatedMessages));
-
-          setChats((prev) => {
-            let updatedChats = prev.filter((chat) => chat.id !== chatId); // Remove if already in list
-            const newChat = {
-              id: chatId,
-              members: newMessage.chat.members,
-              last_message: newMessage,
-              unread_count: newMessage.sender.id !== user.id ? 1 : 0,
-              delivered_count: newMessage.delivered_to?.length > 0 ? 1 : 0,
-              is_group: newMessage.chat.is_group || false,
-              created_at: new Date().toISOString(),
-            };
-            updatedChats = [newChat, ...updatedChats].sort(
-              (a, b) =>
-                new Date(b.last_message?.timestamp || b.created_at) -
-                new Date(a.last_message?.timestamp || a.created_at)
-            ).slice(0, INITIAL_CHAT_LIMIT);
-
-            AsyncStorage.setItem("cached-chats", JSON.stringify(updatedChats));
-            return updatedChats;
-          });
-
-          setHighlightedChatIds((prev) => new Set(prev).add(chatId));
-          Animated.sequence([
-            Animated.timing(fadeAnim, {
-              toValue: 0.7,
-              duration: 200,
-              useNativeDriver: true,
-            }),
-            Animated.timing(fadeAnim, {
-              toValue: 1,
-              duration: 200,
-              useNativeDriver: true,
-            }),
-          ]).start();
-        } else if (data.type === "message_delivered") {
-          const { chat_id, message_id } = data;
-          const cachedMessages = await AsyncStorage.getItem(`chat-${chat_id}-page-1`);
-          const messages = cachedMessages ? JSON.parse(cachedMessages) : [];
-          const updatedMessages = messages.map((m) =>
-            m.id === message_id || m.tempId === message_id
-              ? { ...m, delivered_to: [...(m.delivered_to || []), { id: user.id }] }
-              : m
-          );
-          await AsyncStorage.setItem(`chat-${chat_id}-page-1`, JSON.stringify(updatedMessages));
-
-          setChats((prev) => {
-            let updatedChats = prev.filter((chat) => chat.id !== chat_id);
-            const chatToUpdate = prev.find((chat) => chat.id === chat_id) || {
-              id: chat_id,
-              members: [],
-              is_group: false,
-              created_at: new Date().toISOString(),
-            };
-            const updatedChat = {
-              ...chatToUpdate,
-              last_message: updatedMessages[updatedMessages.length - 1],
-              delivered_count: updatedMessages.filter(
-                (m) => m.delivered_to?.length > 0 && !m.seen_by?.length
-              ).length,
-              unread_count: updatedMessages.filter(
-                (m) =>
-                  !m.seen_by?.some((u) => u.id === user.id) &&
-                  m.sender.id !== user.id
-              ).length,
-            };
-            updatedChats = [updatedChat, ...updatedChats].sort(
-              (a, b) =>
-                new Date(b.last_message?.timestamp || b.created_at) -
-                new Date(a.last_message?.timestamp || a.created_at)
-            ).slice(0, INITIAL_CHAT_LIMIT);
-
-            AsyncStorage.setItem("cached-chats", JSON.stringify(updatedChats));
-            return updatedChats;
-          });
-
-          setHighlightedChatIds((prev) => new Set(prev).add(chat_id));
-        }
-      } catch (error) {
-        console.error("WebSocket message parsing error:", error);
-      }
-    };
-
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
-      ws.close();
-    };
-
-    ws.onclose = () => {
-      console.log("ChatList WebSocket closed");
-      if (user) setTimeout(setupWebSocket, 2000);
-    };
-  }, [user, fadeAnim]);
-
   useEffect(() => {
     if (user) {
       fetchChats();
-      setupWebSocket();
     }
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-        console.log("ChatList WebSocket cleanup");
-      }
+  }, [user, fetchChats]);
+
+  // Handle new message notifications
+  useEffect(() => {
+    const handleNewMessage = async (data) => {
+      const newMessage = data.message;
+      const chatId = newMessage.chat.id;
+
+      const cachedMessages = await AsyncStorage.getItem(`chat-${chatId}-page-1`);
+      const messages = cachedMessages ? JSON.parse(cachedMessages) : [];
+      const updatedMessages = [...messages, newMessage];
+      await AsyncStorage.setItem(`chat-${chatId}-page-1`, JSON.stringify(updatedMessages));
+
+      setChats((prev) => {
+        let updatedChats = prev.filter((chat) => chat.id !== chatId);
+        const existingChat = prev.find((chat) => chat.id === chatId);
+        const newChat = {
+          id: chatId,
+          members: newMessage.chat.members,
+          last_message: newMessage,
+          unread_count: newMessage.sender.id !== user.id ? (existingChat?.unread_count || 0) + 1 : 0,
+          delivered_count: newMessage.delivered_to?.length > 0 ? 1 : 0,
+          is_group: newMessage.chat.is_group || false,
+          created_at: new Date().toISOString(),
+        };
+        updatedChats = [newChat, ...updatedChats]
+          .sort(
+            (a, b) =>
+              new Date(b.last_message?.timestamp || b.created_at) -
+              new Date(a.last_message?.timestamp || a.created_at)
+          )
+          .slice(0, INITIAL_CHAT_LIMIT);
+
+        AsyncStorage.setItem("cached-chats", JSON.stringify(updatedChats));
+        return updatedChats;
+      });
+
+      setHighlightedChatIds((prev) => new Set(prev).add(chatId));
+      Animated.sequence([
+        Animated.timing(fadeAnim, { toValue: 0.7, duration: 200, useNativeDriver: true }),
+        Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+      ]).start();
     };
-  }, [user, fetchChats, setupWebSocket]);
+
+    const handleMessageDelivered = async (data) => {
+      const { chat_id, message_id } = data;
+      const cachedMessages = await AsyncStorage.getItem(`chat-${chat_id}-page-1`);
+      const messages = cachedMessages ? JSON.parse(cachedMessages) : [];
+      const updatedMessages = messages.map((m) =>
+        m.id === message_id || m.tempId === message_id
+          ? { ...m, delivered_to: [...(m.delivered_to || []), { id: user.id }] }
+          : m
+      );
+      await AsyncStorage.setItem(`chat-${chat_id}-page-1`, JSON.stringify(updatedMessages));
+
+      setChats((prev) => {
+        let updatedChats = prev.filter((chat) => chat.id !== chat_id);
+        const chatToUpdate = prev.find((chat) => chat.id === chat_id) || {
+          id: chat_id,
+          members: [],
+          is_group: false,
+          created_at: new Date().toISOString(),
+        };
+        const updatedChat = {
+          ...chatToUpdate,
+          last_message: updatedMessages[updatedMessages.length - 1],
+          delivered_count: updatedMessages.filter(
+            (m) => m.delivered_to?.length > 0 && !m.seen_by?.length
+          ).length,
+          unread_count: updatedMessages.filter(
+            (m) => !m.seen_by?.some((u) => u.id === user.id) && m.sender.id !== user.id
+          ).length,
+        };
+        updatedChats = [updatedChat, ...updatedChats]
+          .sort(
+            (a, b) =>
+              new Date(b.last_message?.timestamp || b.created_at) -
+              new Date(a.last_message?.timestamp || a.created_at)
+          )
+          .slice(0, INITIAL_CHAT_LIMIT);
+
+        AsyncStorage.setItem("cached-chats", JSON.stringify(updatedChats));
+        return updatedChats;
+      });
+
+      setHighlightedChatIds((prev) => new Set(prev).add(chat_id));
+    };
+
+    const unsubscribers = [
+      subscribeToEvent("chat_message", handleNewMessage),
+      subscribeToEvent("message_delivered", handleMessageDelivered),
+    ];
+
+    return () => unsubscribers.forEach((unsub) => unsub());
+  }, [subscribeToEvent, user?.id, fadeAnim]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -234,9 +228,9 @@ const ChatList = () => {
 
   const renderItem = ({ item }) => {
     const friend = item.members.find((m) => m.id !== user.id);
-    const lastSeen = friend?.last_seen ? new Date(friend.last_seen) : null;
-    const isOnline = lastSeen && new Date() - lastSeen < 5 * 60 * 1000;
+    const isOnline = onlineUsers.has(friend?.id); // Use real-time online status
     const isHighlighted = highlightedChatIds.has(item.id);
+    const isSentMessage = item.last_message && item.last_message.sender.id === user.id; // Check if the last message was sent by the current user
 
     return (
       <Animated.View style={{ opacity: fadeAnim }}>
@@ -255,9 +249,11 @@ const ChatList = () => {
             <View style={tw`relative`}>
               <Image
                 source={{
-                  uri: friend?.profile_picture || "https://via.placeholder.com/40",
+                  uri: friend?.profile_picture || PLACEHOLDER_IMAGE,
                 }}
                 style={tw`w-12 h-12 rounded-full mr-3`}
+                resizeMode="cover"
+                onError={(e) => console.log(`Failed to load image for ${friend?.username}:`, e.nativeEvent.error)}
               />
               {isOnline && !item.is_group && (
                 <View
@@ -288,6 +284,7 @@ const ChatList = () => {
                     newSet.delete(item.id);
                     return newSet;
                   });
+                  clearNotifications(item.id); // Clear notifications for this chat
                 } catch (error) {
                   console.error("Error marking as read:", error);
                 }
@@ -295,7 +292,7 @@ const ChatList = () => {
 
               navigation.navigate("ChatScreen", {
                 chatId: item.id,
-                friendUsername: item.is_group ? null : item.name || friend?.username,
+                friendUsername: item.is_group ? null : friend?.username,
                 isGroup: item.is_group || false,
               });
             }}
@@ -305,7 +302,7 @@ const ChatList = () => {
                 <Text style={tw`text-lg font-semibold text-gray-800`}>
                   {item.is_group
                     ? item.name || `Group ${item.id}`
-                    : item.name || friend?.username || "Unknown"}
+                    : item.name || friend?.first_name || "Unknown"}
                 </Text>
                 <Text style={tw`text-xs text-gray-500`}>
                   {item.last_message
@@ -317,27 +314,27 @@ const ChatList = () => {
                 </Text>
               </View>
               <Text
-                style={tw`text-sm text-gray-600 mt-1 ${
-                  item.unread_count > 0 ? "font-medium" : ""
-                }`}
+                style={tw`${
+                  isSentMessage ? "text-blue-600" : "text-gray-600"
+                } text-sm mt-1 ${item.unread_count > 0 ? "font-medium" : ""}`}
                 numberOfLines={2}
                 ellipsizeMode="tail"
               >
                 {item.last_message
-                  ? `${item.last_message.sender.username}: ${
-                      truncateMessage(item.last_message.content) || item.last_message.message_type
-                    }`
+                  ? isSentMessage
+                    ? `You: ${truncateMessage(item.last_message.content) || item.last_message.message_type}`
+                    : item.is_group
+                    ? `${
+                        item.last_message.sender.first_name || item.last_message.sender.username
+                      }: ${truncateMessage(item.last_message.content) || item.last_message.message_type}`
+                    : `${truncateMessage(item.last_message.content) || item.last_message.message_type}`
                   : "No messages yet"}
               </Text>
               {!item.is_group && (
                 <Text
                   style={tw`text-xs mt-1 ${isOnline ? "text-green-500" : "text-gray-500"}`}
                 >
-                  {isOnline
-                    ? "Online"
-                    : lastSeen
-                    ? `Last seen: ${lastSeen.toLocaleTimeString()}`
-                    : "Offline"}
+                  {isOnline ? "Online" : "Offline"}
                 </Text>
               )}
             </View>

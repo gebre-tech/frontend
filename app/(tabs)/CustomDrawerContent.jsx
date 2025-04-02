@@ -1,3 +1,4 @@
+// CustomDrawerContent.jsx
 import React, { useEffect, useState, useContext, useCallback, useRef } from 'react';
 import {
   View, Text, Image, StyleSheet, TouchableOpacity, TextInput,
@@ -35,11 +36,11 @@ const CustomAlert = ({ visible, title, message, onClose }) => {
   const [fadeAnim] = useState(new Animated.Value(0));
 
   useEffect(() => {
-    if (visible) {
-      Animated.timing(fadeAnim, { toValue: 1, duration: 300, useNativeDriver: true }).start();
-    } else {
-      Animated.timing(fadeAnim, { toValue: 0, duration: 200, useNativeDriver: true }).start();
-    }
+    Animated.timing(fadeAnim, {
+      toValue: visible ? 1 : 0,
+      duration: visible ? 300 : 200,
+      useNativeDriver: true,
+    }).start();
   }, [visible]);
 
   return (
@@ -62,12 +63,11 @@ export default function CustomDrawerContent(props) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [bio, setBio] = useState("");
-  const [profileImage, setProfileImage] = useState(null);
+  const [profileImage, setProfileImage] = useState('https://via.placeholder.com/100');
   const [lastSeen, setLastSeen] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [alert, setAlert] = useState({ visible: false, title: "", message: "" });
-  const [ws, setWs] = useState(null);
   const { logout, user } = useContext(AuthContext);
   const navigation = useNavigation();
   const fadeAnim = useState(new Animated.Value(0))[0];
@@ -85,14 +85,17 @@ export default function CustomDrawerContent(props) {
       });
 
       const profileData = response.data;
+      console.log("Raw profile data from backend:", profileData);  // Log raw response
       setUsername(profileData.user.username);
       setFirstName(profileData.user.first_name || "");
       setLastName(profileData.user.last_name || "");
       setBio(profileData.bio || "");
       setLastSeen(profileData.last_seen);
-      setProfileImage(profileData.profile_picture 
-        ? `${API_URL}${profileData.profile_picture}?t=${Date.now()}`
-        : 'https://via.placeholder.com/100');
+      const newProfileImage = profileData.profile_picture 
+        ? `${profileData.profile_picture}?t=${Date.now()}` 
+        : 'https://via.placeholder.com/100';
+      setProfileImage(newProfileImage);
+      console.log("Profile image set to (fetch):", newProfileImage);
     } catch (error) {
       if (error.response?.status === 404) {
         setUsername(user?.username || "Your Name");
@@ -116,26 +119,40 @@ export default function CustomDrawerContent(props) {
     const token = await AsyncStorage.getItem('token');
     if (!token) return;
 
-    const ws = new WebSocket(`ws://127.0.0.1:8000/ws/profile/?token=${token}`);
+    const connectWebSocket = () => {
+      const ws = new WebSocket(`${WS_URL}?token=${token}`);
 
-    ws.onopen = () => console.log('Profile WebSocket connected');
-    ws.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      if (data.type === 'last_seen_update') {
-        console.log('Last seen updated:', data.last_seen);
-      } else if (data.type === 'profile_update') {
-        setUsername(data.username);
-        setFirstName(data.first_name);
-        setLastName(data.last_name);
-        setBio(data.bio);
-        setProfileImage(data.profile_picture || 'https://via.placeholder.com/100');
-      }
+      ws.onopen = () => console.log('Profile WebSocket connected');
+      ws.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        console.log("WebSocket message received:", data);
+        if (data.type === 'last_seen_update') {
+          setLastSeen(data.last_seen);
+        } else if (data.type === 'profile_update') {
+          setUsername(data.username);
+          setFirstName(data.first_name);
+          setLastName(data.last_name);
+          setBio(data.bio);
+          const newProfileImage = data.profile_picture 
+            ? `${data.profile_picture}?t=${Date.now()}` 
+            : 'https://via.placeholder.com/100';
+          setProfileImage(newProfileImage);
+          console.log("Profile image set to (WebSocket):", newProfileImage);
+        }
+      };
+      ws.onerror = (e) => console.error('Profile WebSocket error:', e);
+      ws.onclose = () => {
+        console.log('Profile WebSocket disconnected, reconnecting...');
+        setTimeout(connectWebSocket, 2000);
+      };
+
+      wsRef.current = ws;
     };
-    ws.onerror = (e) => console.error('Profile WebSocket error:', e);
-    ws.onclose = () => console.log('Profile WebSocket disconnected');
 
-    wsRef.current = ws;
-    return () => ws.close();
+    connectWebSocket();
+    return () => {
+      if (wsRef.current) wsRef.current.close();
+    };
   }, []);
 
   const updateLastSeen = useCallback(() => {
@@ -160,10 +177,7 @@ export default function CustomDrawerContent(props) {
       clearInterval(fetchInterval);
       debouncedFetchProfile.cancel();
       debouncedUpdateLastSeen.cancel();
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
+      if (wsRef.current) wsRef.current.close();
     };
   }, [fetchProfile, setupWebSocket, debouncedUpdateLastSeen, debouncedFetchProfile]);
 
@@ -183,12 +197,23 @@ export default function CustomDrawerContent(props) {
       });
 
       if (!result.canceled) {
+        const asset = result.assets[0];
+        if (!['image/jpeg', 'image/png'].includes(asset.mimeType)) {
+          setAlert({ visible: true, title: "Invalid Format", message: "Only JPEG and PNG images are supported." });
+          return;
+        }
+        if (asset.fileSize > 5 * 1024 * 1024) {
+          setAlert({ visible: true, title: "File Too Large", message: "Image must be under 5MB." });
+          return;
+        }
+
         const manipulatedImage = await ImageManipulator.manipulateAsync(
-          result.assets[0].uri,
+          asset.uri,
           [{ resize: { width: 300, height: 300 } }],
           { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
         );
-        setProfileImage(manipulatedImage.uri); // Set local URI for preview
+        setProfileImage(manipulatedImage.uri);
+        console.log("Profile image set to (local pick):", manipulatedImage.uri);
       }
     } catch (error) {
       setAlert({ visible: true, title: "Error", message: "Failed to pick image." });
@@ -226,7 +251,7 @@ export default function CustomDrawerContent(props) {
       if (profileImage && !profileImage.startsWith('http')) {
         const response = await fetch(profileImage);
         const blob = await response.blob();
-        formData.append('profile_picture', blob, 'profile.jpg'); // Ensure correct key matches backend
+        formData.append('profile_picture', blob, 'profile.jpg');
       }
 
       const uploadResponse = await axios.post(`${API_URL}/profiles/profile/`, formData, {
@@ -237,17 +262,27 @@ export default function CustomDrawerContent(props) {
         timeout: 10000,
       });
 
-      // Fetch updated profile to get server-hosted image URL
-      await fetchProfile();
+      const updatedProfile = uploadResponse.data;
+      console.log("Raw updated profile data from backend:", updatedProfile);  // Log raw response
+      const newProfileImage = updatedProfile.profile_picture 
+        ? `${updatedProfile.profile_picture}?t=${Date.now()}` 
+        : 'https://via.placeholder.com/100';
+      setProfileImage(newProfileImage);
+      setUsername(updatedProfile.user.username);
+      setFirstName(updatedProfile.user.first_name);
+      setLastName(updatedProfile.user.last_name);
+      setBio(updatedProfile.bio || '');
+      setLastSeen(updatedProfile.last_seen);
+      console.log("Profile image set to (update):", newProfileImage);
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
           type: 'update_profile',
-          username,
-          first_name: firstName,
-          last_name: lastName,
-          bio,
-          profile_picture: uploadResponse.data.profile_picture || null, // Use server URL if available
+          username: updatedProfile.user.username,
+          first_name: updatedProfile.user.first_name,
+          last_name: updatedProfile.user.last_name,
+          bio: updatedProfile.bio,
+          profile_picture: updatedProfile.profile_picture,
         }));
       }
 
@@ -255,7 +290,7 @@ export default function CustomDrawerContent(props) {
         visible: true,
         title: "Success",
         message: "Profile updated successfully!",
-        onClose: () => setIsEditing(false)
+        onClose: () => setIsEditing(false),
       });
     } catch (error) {
       console.error("Update profile error:", error);
@@ -263,6 +298,11 @@ export default function CustomDrawerContent(props) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const refreshProfile = () => {
+    fetchProfile();
+    setAlert({ visible: true, title: "Refreshed", message: "Profile data refreshed." });
   };
 
   if (loading && !username) {
@@ -279,7 +319,7 @@ export default function CustomDrawerContent(props) {
       <DrawerContentScrollView {...props}>
         <Animated.View style={[styles.profileContainer, { opacity: fadeAnim }]}>
           <TouchableOpacity
-            onPress={() => isEditing ? pickImage() : setIsEditing(true)}
+            onPress={() => (isEditing ? pickImage() : setIsEditing(true))}
             style={styles.imageContainer}
             activeOpacity={0.7}
           >
@@ -287,6 +327,7 @@ export default function CustomDrawerContent(props) {
               source={{ uri: profileImage }}
               style={styles.profileImage}
               resizeMode="cover"
+              onError={(e) => console.error("Image load error:", e.nativeEvent.error)}
             />
             <View style={styles.editIcon}>
               <MaterialCommunityIcons name={isEditing ? "camera" : "pencil"} size={22} color={COLORS.white} />
@@ -382,6 +423,11 @@ export default function CustomDrawerContent(props) {
               )}
             </View>
           )}
+          {!isEditing && (
+            <TouchableOpacity style={styles.refreshButton} onPress={refreshProfile}>
+              <MaterialCommunityIcons name="refresh" size={24} color={COLORS.primary} />
+            </TouchableOpacity>
+          )}
         </Animated.View>
         <DrawerItemList {...props} />
       </DrawerContentScrollView>
@@ -389,7 +435,9 @@ export default function CustomDrawerContent(props) {
         visible={alert.visible}
         title={alert.title}
         message={alert.message}
-        onClose={alert.onClose ? () => { setAlert({ ...alert, visible: false }); alert.onClose(); } : () => setAlert({ ...alert, visible: false })}
+        onClose={alert.onClose 
+          ? () => { setAlert({ ...alert, visible: false }); alert.onClose(); } 
+          : () => setAlert({ ...alert, visible: false })}
       />
     </KeyboardAvoidingView>
   );
@@ -406,7 +454,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white, 
     borderBottomWidth: 1, 
     borderBottomColor: COLORS.border, 
-    boxShadow: `0 2px 4px ${COLORS.shadow}`,
+    position: 'relative',
   },
   imageContainer: { position: 'relative', marginBottom: 20 },
   profileImage: { 
@@ -416,7 +464,6 @@ const styles = StyleSheet.create({
     borderWidth: 3, 
     borderColor: COLORS.primary, 
     backgroundColor: COLORS.background,
-    boxShadow: `0 2px 5px ${COLORS.shadow}`,
   },
   editIcon: { 
     position: 'absolute', 
@@ -424,8 +471,7 @@ const styles = StyleSheet.create({
     right: 0, 
     backgroundColor: COLORS.primary, 
     borderRadius: 15, 
-    padding: 8, 
-    boxShadow: `0 1px 2px ${COLORS.shadow}`,
+    padding: 8,
   },
   profileName: { 
     fontSize: 26, 
@@ -433,7 +479,6 @@ const styles = StyleSheet.create({
     color: COLORS.text, 
     marginBottom: 15, 
     letterSpacing: 0.5,
-    textShadow: '1px 1px 2px rgba(0, 0, 0, 0.1)',
   },
   profileInfo: { width: '100%', paddingHorizontal: 10 },
   infoRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 10, paddingVertical: 5 },
@@ -455,8 +500,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white, 
     fontSize: 16, 
     color: COLORS.text, 
-    marginLeft: 10, 
-    boxShadow: `0 1px 2px ${COLORS.shadow}`,
+    marginLeft: 10,
   },
   bioInput: { 
     height: 120, 
@@ -469,12 +513,10 @@ const styles = StyleSheet.create({
     paddingVertical: 14, 
     borderRadius: 12, 
     width: '100%', 
-    alignItems: 'center', 
-    boxShadow: `0 2px 3px ${COLORS.shadow}`,
+    alignItems: 'center',
   },
   buttonDisabled: { 
-    backgroundColor: COLORS.disabled, 
-    boxShadow: 'none',
+    backgroundColor: COLORS.disabled,
   },
   updateButtonText: { 
     color: COLORS.white, 
@@ -496,6 +538,11 @@ const styles = StyleSheet.create({
     fontSize: 16, 
     fontWeight: '500' 
   },
+  refreshButton: { 
+    position: 'absolute', 
+    top: 20, 
+    right: 20 
+  },
   alertOverlay: { 
     flex: 1, 
     justifyContent: 'center', 
@@ -507,8 +554,7 @@ const styles = StyleSheet.create({
     padding: 25, 
     borderRadius: 15, 
     width: '85%', 
-    alignItems: 'center', 
-    boxShadow: `0 2px 4px ${COLORS.shadow}`,
+    alignItems: 'center',
   },
   alertTitle: { 
     fontSize: 22, 

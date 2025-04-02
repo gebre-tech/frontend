@@ -2,7 +2,7 @@ import React from "react";
 import { createStackNavigator } from "@react-navigation/stack";
 import { Ionicons } from "@expo/vector-icons"; // Add this import
 import ChatList from "./ChatList";
-import ChatScreen from "./ChatScreen";
+import ChatScreen from "./chatScreen";
 import FriendProfile from "./FriendProfile";
 import Contacts from "./Contacts";
 

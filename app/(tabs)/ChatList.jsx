@@ -16,7 +16,7 @@ import { useNavigation } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import tw from "twrnc";
-import { useWebSocket } from "../../hooks/useWebSocket";
+import { useWebSocket } from "../hooks/useWebSocket";
 
 const API_URL = "http://127.0.0.1:8000";
 const INITIAL_CHAT_LIMIT = 5;
@@ -289,6 +289,9 @@ const ChatList = () => {
                   console.error("Error marking as read:", error);
                 }
               }
+
+              // Clear any pending messages in the WebSocket queue to avoid resending
+             
 
               navigation.navigate("ChatScreen", {
                 chatId: item.id,

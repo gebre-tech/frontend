@@ -69,25 +69,37 @@ const Contacts = () => {
     try {
       const token = await AsyncStorage.getItem("token");
       if (!token) throw new Error("No authentication token found");
-      console.log(
-        `Starting chat: friendId=${friendId}, friendUsername=${friendUsername}, tokenPrefix=${token.slice(0, 10)}...`
+  
+      // Check if a chat room already exists
+      const response = await axios.get(`${API_URL}/chat/rooms/`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+  
+      const existingChat = response.data.find(
+        (chat) =>
+          !chat.is_group &&
+          chat.members.some((member) => member.id === friendId) &&
+          chat.members.some((member) => member.id === user.id)
       );
-
-      const response = await axios.post(
-        `${API_URL}/chat/send-message/`,
-        {
-          receiver_id: friendId,
-          content: "",
-          message_type: "text",
-          isGroup: false,
-        },
-        { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
-      );
-
-      console.log("Send message response:", JSON.stringify(response.data));
-      const chatId = response.data.chat?.id || response.data.id;
-      if (!chatId) throw new Error("Chat ID not found in response");
-
+  
+      let chatId;
+      if (existingChat) {
+        chatId = existingChat.id;
+      } else {
+        // Create a new chat room without sending a message
+        const createChatResponse = await axios.post(
+          `${API_URL}/chat/rooms/`,
+          {
+            members: [friendId],
+            is_group: false,
+          },
+          { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
+        );
+        chatId = createChatResponse.data.id;
+      }
+  
+      if (!chatId) throw new Error("Chat ID not found");
+  
       console.log(`Navigating to ChatScreen with chatId=${chatId}, friendUsername=${friendUsername}`);
       navigation.navigate("ChatScreen", { chatId, friendUsername, isGroup: false });
     } catch (error) {

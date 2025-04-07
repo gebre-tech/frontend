@@ -1,4 +1,4 @@
-// Contacts.jsx
+// app/tabs/Contacts.jsx
 import React, { useState, useEffect, useContext, useCallback } from "react";
 import {
   View,
@@ -82,26 +82,26 @@ const Contacts = () => {
           chat.members.some((member) => member.id === user.id)
       );
   
-      let chatId;
-      if (existingChat) {
-        chatId = existingChat.id;
+      let chatId = existingChat?.id;
+  
+      if (!chatId) {
+        // If no chat exists, we'll let the backend create it when the first message is sent
+        // Navigate to ChatScreen with friend details, and let SendMessageView handle creation
+        console.log(`No existing chat found, navigating to ChatScreen for ${friendUsername}`);
+        navigation.navigate("ChatScreen", {
+          chatId: null, // Pass null to indicate no existing chat
+          friendId,     // Pass friendId to use in ChatScreen
+          friendUsername,
+          isGroup: false,
+        });
       } else {
-        // Create a new chat room without sending a message
-        const createChatResponse = await axios.post(
-          `${API_URL}/chat/rooms/`,
-          {
-            members: [friendId],
-            is_group: false,
-          },
-          { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
-        );
-        chatId = createChatResponse.data.id;
+        console.log(`Navigating to ChatScreen with chatId=${chatId}, friendUsername=${friendUsername}`);
+        navigation.navigate("ChatScreen", {
+          chatId,
+          friendUsername,
+          isGroup: false,
+        });
       }
-  
-      if (!chatId) throw new Error("Chat ID not found");
-  
-      console.log(`Navigating to ChatScreen with chatId=${chatId}, friendUsername=${friendUsername}`);
-      navigation.navigate("ChatScreen", { chatId, friendUsername, isGroup: false });
     } catch (error) {
       console.error("Start chat error:", {
         message: error.message,

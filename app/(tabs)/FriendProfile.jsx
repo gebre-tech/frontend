@@ -1,3 +1,4 @@
+// app/tabs/FriendProfile.jsx
 import React, { useState, useEffect } from 'react';
 import { View, Text, Image, StyleSheet, ActivityIndicator, Alert, TouchableOpacity } from 'react-native';
 import axios from 'axios';

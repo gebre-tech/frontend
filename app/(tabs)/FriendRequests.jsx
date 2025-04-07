@@ -1,4 +1,4 @@
-// src/screens/FriendRequests.jsx
+// app/tabs/FriendRequests.jsx
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import axios from 'axios';

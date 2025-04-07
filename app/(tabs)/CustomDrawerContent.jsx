@@ -1,4 +1,4 @@
-// CustomDrawerContent.jsx
+// app/tabs/CustomDrawerContent.jsx
 import React, { useEffect, useState, useContext, useCallback, useRef } from 'react';
 import {
   View, Text, Image, StyleSheet, TouchableOpacity, TextInput,

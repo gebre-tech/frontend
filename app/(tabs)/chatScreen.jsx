@@ -14,6 +14,7 @@ import {
   Platform,
   Animated,
   ScrollView,
+  Linking,
 } from 'react-native';
 import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
 import { AuthContext } from '../../context/AuthContext';
@@ -22,6 +23,8 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import * as MediaLibrary from 'expo-media-library';
 import { Video } from 'expo-av';
 import tw from 'twrnc';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -32,6 +35,7 @@ import { API_URL, PLACEHOLDER_IMAGE, REACTION_EMOJIS, PAGE_SIZE } from '../utils
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { LinearGradient } from 'expo-linear-gradient';
 
+// VideoMessage Component
 const VideoMessage = ({ uri }) => {
   const [error, setError] = useState(null);
   const videoRef = useRef(null);
@@ -58,6 +62,7 @@ const VideoMessage = ({ uri }) => {
   );
 };
 
+// Main ChatScreen Component
 const ChatScreen = () => {
   const route = useRoute();
   const navigation = useNavigation();
@@ -186,10 +191,7 @@ const ChatScreen = () => {
         const messageId = event.messageId;
         const serverId = event.serverId;
         const chatMessages = messageStore.messages[chatId] || {};
-        if (!chatMessages[messageId]) {
-          console.warn(`[WebSocket] Received ack for unknown message ${messageId} in chat ${chatId}`);
-          return;
-        }
+        if (!chatMessages[messageId]) return;
         messageStore.updateMessage(chatId, messageId, { id: serverId, tempId: null, status: null });
       }),
       subscribeToEvent('reaction', (event) =>
@@ -272,9 +274,6 @@ const ChatScreen = () => {
         });
       });
     },
-    onError: (error) => {
-      console.error("Failed to mark messages as read:", error);
-    },
   });
 
   const markAsDelivered = useMutation({
@@ -293,87 +292,94 @@ const ChatScreen = () => {
         sendMessage({ type: 'message_delivered', chat_id: chatId, message_id: messageId });
       });
     },
-    onError: (error) => {
-      console.error("Failed to mark messages as delivered:", error);
-    },
   });
 
-  const throttledMarkAsRead = useMemo(() => debounce((messageIds) => {
-    console.log("Marking as read:", messageIds);
-    markAsRead.mutate(messageIds);
-  }, 1000), [markAsRead]);
+  const throttledMarkAsRead = useMemo(() => debounce((messageIds) => markAsRead.mutate(messageIds), 1000), [markAsRead]);
+  const throttledMarkAsDelivered = useMemo(() => debounce((messageIds) => markAsDelivered.mutate(messageIds), 1000), [markAsDelivered]);
 
-  const throttledMarkAsDelivered = useMemo(() => debounce((messageIds) => {
-    console.log("Marking as delivered:", messageIds);
-    markAsDelivered.mutate(messageIds);
-  }, 1000), [markAsDelivered]);
+  const unreadMessages = useMemo(() =>
+    messages.filter((msg) =>
+      msg.sender.id !== user?.id && !(msg.seen_by_details || []).some((u) => u.user.id === user?.id)
+    ),
+    [messages, user?.id]
+  );
 
-  const unreadMessages = useMemo(() => {
-    return messages.filter((msg) => 
-      msg.sender.id !== user?.id && 
-      !(msg.seen_by_details || []).some((u) => u.user.id === user?.id)
-    );
-  }, [messages, user?.id]);
-
-  const undeliveredMessages = useMemo(() => {
-    return messages.filter((msg) => 
-      msg.sender.id !== user?.id && 
-      !(msg.delivered_to || []).some((u) => u.id === user?.id)
-    );
-  }, [messages, user?.id]);
+  const undeliveredMessages = useMemo(() =>
+    messages.filter((msg) =>
+      msg.sender.id !== user?.id && !(msg.delivered_to || []).some((u) => u.id === user?.id)
+    ),
+    [messages, user?.id]
+  );
 
   useEffect(() => {
     if (!chatId || !isAtBottom) return;
-
-    if (undeliveredMessages.length) {
-      const messageIdsToMark = undeliveredMessages.map((msg) => msg.id);
-      throttledMarkAsDelivered(messageIdsToMark);
-    }
-
-    if (unreadMessages.length) {
-      const messageIdsToMark = unreadMessages.map((msg) => msg.id);
-      throttledMarkAsRead(messageIdsToMark);
-    }
-
+    if (undeliveredMessages.length) throttledMarkAsDelivered(undeliveredMessages.map((msg) => msg.id));
+    if (unreadMessages.length) throttledMarkAsRead(unreadMessages.map((msg) => msg.id));
     return () => {
       throttledMarkAsDelivered.cancel();
       throttledMarkAsRead.cancel();
     };
   }, [unreadMessages, undeliveredMessages, isAtBottom, chatId, throttledMarkAsDelivered, throttledMarkAsRead]);
 
+  const getMimeTypeFromUri = (uri, fileName) => {
+    const ext = (fileName || uri).split('.').pop().toLowerCase();
+    const mimeTypes = {
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+      mp4: 'video/mp4',
+      mov: 'video/quicktime',
+      mp3: 'audio/mpeg',
+      wav: 'audio/wav',
+      pdf: 'application/pdf',
+      doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      txt: 'text/plain',
+    };
+    return mimeTypes[ext] || 'application/octet-stream';
+  };
+
+  const getFileSize = async (uri) => {
+    if (Platform.OS === 'web') return null; // Size not available pre-upload on web
+    const fileInfo = await FileSystem.getInfoAsync(uri, { size: true });
+    return fileInfo.size;
+  };
+
   const handleSendMessage = useCallback(
     async (type = 'text', attachment, schedule = null) => {
-      if (!message.trim() && !attachment) return;
-      if (sending) return;
+      if ((!message.trim() && !attachment) || sending) return;
 
       setSending(true);
       try {
         let attachmentUrl = null;
         let newChatId = chatId;
+        let attachmentSize = null;
 
         if (attachment) {
-          console.log('Attachment before upload:', attachment); // Log the attachment object
+          if (Platform.OS !== 'web') {
+            attachmentSize = await getFileSize(attachment.uri);
+            if (attachmentSize > 100 * 1024 * 1024) {
+              throw new Error('File size exceeds 100MB limit');
+            }
+          }
+
           const token = await AsyncStorage.getItem('token');
           const formData = new FormData();
-          // Validate the URI
-          if (!attachment.uri || typeof attachment.uri !== 'string') {
-            console.error('Invalid file URI:', attachment.uri);
-            Alert.alert('Error', 'Invalid file selected. Please try again.');
-            setSending(false);
-            return;
-          }
-          // Normalize URI for iOS and Android
-          let normalizedUri = attachment.uri;
-          if (Platform.OS === 'ios' && !normalizedUri.startsWith('file://')) {
-            normalizedUri = `file://${normalizedUri}`;
-          }
-          formData.append('file', {
-            uri: normalizedUri,
-            type: attachment.mimeType || 'application/octet-stream',
-            name: attachment.fileName || `file_${Date.now()}.${attachment.mimeType?.split('/')[1] || 'bin'}`,
-          });
+          const uri = Platform.OS === 'android' && !attachment.uri.startsWith('file://') ? `file://${attachment.uri}` : attachment.uri;
 
-          console.log('FormData prepared for upload:', formData); // Note: FormData logging might not show file content
+          if (Platform.OS === 'web' && attachment.uri.startsWith('blob:')) {
+            const response = await fetch(attachment.uri);
+            const blob = await response.blob();
+            formData.append('file', new File([blob], attachment.fileName, { type: attachment.mimeType }));
+          } else {
+            formData.append('file', {
+              uri,
+              type: attachment.mimeType || getMimeTypeFromUri(uri, attachment.fileName),
+              name: attachment.fileName,
+            });
+          }
+
+          console.log('Sending attachment:', { uri: attachment.uri, mimeType: attachment.mimeType, fileName: attachment.fileName });
 
           const response = await withTokenRefresh(() =>
             axios.post(
@@ -386,16 +392,12 @@ const ChatScreen = () => {
                 },
               }
             ).catch((error) => {
-              console.error('Upload error details:', {
-                status: error.response?.status,
-                data: error.response?.data,
-                headers: error.response?.headers,
-              });
+              console.error('Upload failed with response:', error.response?.data);
               throw error;
             })
           );
-          console.log('Upload response:', response.data);
           attachmentUrl = response.data.attachment_url;
+          attachmentSize = response.data.attachment_size || attachmentSize;
           if (!chatId) {
             newChatId = response.data.chat.id;
             setChatId(newChatId);
@@ -411,6 +413,9 @@ const ChatScreen = () => {
           content: type === 'text' && !editingMessageId ? message : '',
           message_type: type,
           attachment_url: attachmentUrl,
+          attachment_mime_type: attachment?.mimeType,
+          attachment_size: attachmentSize,
+          attachment_name: attachment?.fileName,
           timestamp,
           delivered_to: [],
           seen_by_details: [],
@@ -464,7 +469,8 @@ const ChatScreen = () => {
 
         setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
       } catch (error) {
-        Alert.alert('Error', error.response?.data?.error || 'Failed to send message');
+        console.error('Send message error:', error);
+        Alert.alert('Error', error.message || error.response?.data?.error || 'Failed to send message');
       } finally {
         setSending(false);
       }
@@ -505,39 +511,85 @@ const ChatScreen = () => {
   });
 
   const pickMedia = useCallback(async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (Platform.OS === 'web') {
+      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.All, quality: 0.8 });
+      if (!result.canceled && result.assets?.[0]) {
+        const asset = result.assets[0];
+        const mimeType = asset.mimeType || getMimeTypeFromUri(asset.uri, asset.fileName);
+        setPendingFile({
+          uri: asset.uri,
+          mimeType,
+          fileName: asset.fileName || `media_${Date.now()}.${mimeType.split('/')[1] || 'bin'}`,
+          size: asset.fileSize || null,
+        });
+      }
+      return;
+    }
+
+    const { status } = await MediaLibrary.requestPermissionsAsync();
     if (status !== 'granted') return Alert.alert('Permission required', 'Please allow media access.');
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.All, quality: 0.8 });
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      quality: 0.8,
+      allowsEditing: false,
+    });
     if (!result.canceled && result.assets?.[0]) {
       const asset = result.assets[0];
-      console.log('Picked media asset:', asset); // Add this log
-      // Determine MIME type more accurately
-      let mimeType;
-      if (asset.type === 'video') {
-        mimeType = 'video/mp4';
-      } else if (asset.type === 'image') {
-        const extension = asset.uri.split('.').pop().toLowerCase();
-        mimeType = `image/${extension === 'jpg' || extension === 'jpeg' ? 'jpeg' : 'png'}`;
-      } else {
-        mimeType = 'application/octet-stream';
-      }
+      const fileInfo = await FileSystem.getInfoAsync(asset.uri, { size: true });
+      const mimeType = asset.mimeType || getMimeTypeFromUri(asset.uri, asset.fileName);
       setPendingFile({
         uri: asset.uri,
         mimeType,
-        fileName: asset.fileName || `media_${Date.now()}.${asset.type === 'video' ? 'mp4' : extension || 'jpg'}`,
+        fileName: asset.fileName || `media_${Date.now()}.${mimeType.split('/')[1] || 'bin'}`,
+        size: fileInfo.size,
       });
     }
   }, []);
 
   const pickFile = useCallback(async () => {
+    if (Platform.OS === 'web') {
+      const result = await DocumentPicker.getDocumentAsync({ type: '*/*' });
+      if (result.type !== 'cancel') {
+        const mimeType = result.mimeType || getMimeTypeFromUri(result.uri, result.name);
+        setPendingFile({
+          uri: result.uri,
+          fileName: result.name || `file_${Date.now()}`,
+          mimeType,
+          size: result.size || null,
+        });
+      }
+      return;
+    }
+
     const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
     if (result.type !== 'cancel') {
-      console.log('Picked file result:', result); // Add this log
+      const fileInfo = await FileSystem.getInfoAsync(result.uri, { size: true });
+      const mimeType = result.mimeType || getMimeTypeFromUri(result.uri, result.name);
       setPendingFile({
         uri: result.uri,
         fileName: result.name || `file_${Date.now()}`,
-        mimeType: result.mimeType || 'application/octet-stream',
+        mimeType,
+        size: fileInfo.size,
       });
+    }
+  }, []);
+
+  const downloadFile = useCallback(async (attachmentUrl, attachmentName, mimeType) => {
+    try {
+      if (Platform.OS === 'web') {
+        Linking.openURL(attachmentUrl);
+        return;
+      }
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      if (status !== 'granted') return Alert.alert('Permission required', 'Please allow storage access.');
+
+      const fileUri = `${FileSystem.documentDirectory}${attachmentName || attachmentUrl.split('/').pop()}`;
+      const { uri } = await FileSystem.downloadAsync(attachmentUrl, fileUri);
+      await MediaLibrary.saveToLibraryAsync(uri);
+      Alert.alert('Success', 'File downloaded to your device');
+    } catch (error) {
+      console.error('Download error:', error);
+      Alert.alert('Error', 'Failed to download file');
     }
   }, []);
 
@@ -566,20 +618,33 @@ const ChatScreen = () => {
       const status = item.status || (item.seen_by_details?.length > (isGroup ? 1 : 0) ? '✓✓' : item.delivered_to?.length > (isGroup ? 1 : 0) ? '✓' : item.tempId ? '⌛' : '✓');
       const time = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+      const onPressFile = () => {
+        if (item.attachment_url) {
+          downloadFile(item.attachment_url, item.attachment_name, item.attachment_mime_type);
+        }
+      };
+
       return (
         <Animated.View style={tw`flex-row ${isSent ? 'justify-end' : 'justify-start'} mx-3 my-1 opacity-${fadeAnim}`}>
           <TouchableOpacity
             style={tw`rounded-3xl p-3 max-w-[75%] shadow-md ${isSent ? 'bg-blue-500' : 'bg-white'} ${item.isPinned ? 'border-2 border-amber-400' : ''}`}
             onLongPress={() => showMessageActions(item)}
+            onPress={item.message_type === 'file' ? onPressFile : undefined}
           >
             {!isSent && isGroup && <Text style={tw`text-gray-500 text-xs mb-1 font-semibold`}>{item.sender.first_name || item.sender.username}</Text>}
             {item.message_type === 'text' && (
               <Text style={tw`${isSent ? 'text-white' : 'text-gray-900'} ${item.is_deleted ? 'italic text-gray-400' : ''} text-base`}>{item.content}</Text>
             )}
-            {item.message_type === 'image' && <Image source={{ uri: item.attachment_url || PLACEHOLDER_IMAGE }} style={tw`w-64 h-64 rounded-2xl`} />}
+            {item.message_type === 'image' && (
+              <Image source={{ uri: item.attachment_url || PLACEHOLDER_IMAGE }} style={tw`w-64 h-64 rounded-2xl`} resizeMode="contain" />
+            )}
             {item.message_type === 'video' && <VideoMessage uri={item.attachment_url} />}
             {item.message_type === 'file' && (
-              <Text style={tw`${isSent ? 'text-blue-100' : 'text-blue-600'} underline text-base`}>{item.attachment_url?.split('/').pop()}</Text>
+              <TouchableOpacity onPress={onPressFile}>
+                <Text style={tw`${isSent ? 'text-blue-100' : 'text-blue-600'} underline text-base`}>
+                  {item.attachment_name || item.attachment_url?.split('/').pop()} {item.attachment_size ? `(${(item.attachment_size / 1024 / 1024).toFixed(2)} MB)` : ''}
+                </Text>
+              </TouchableOpacity>
             )}
             {item.status === 'scheduled' && (
               <Text style={tw`text-xs italic text-gray-400 mt-1`}>Scheduled for {new Date(item.scheduledTime).toLocaleString()}</Text>
@@ -612,7 +677,7 @@ const ChatScreen = () => {
         </Animated.View>
       );
     },
-    [user?.id, isGroup, showReactions, fadeAnim, isConnected, retryMessage]
+    [user?.id, isGroup, showReactions, fadeAnim, isConnected, retryMessage, downloadFile]
   );
 
   const showMessageActions = (item) => {
@@ -628,6 +693,7 @@ const ChatScreen = () => {
         ? [{ text: item.isPinned ? 'Unpin' : 'Pin', onPress: () => { pinMessage.mutate(item.id); sendMessage({ type: 'pin', message_id: item.id }); } }]
         : []),
       { text: 'React', onPress: () => setShowReactions(item.id) },
+      ...(item.attachment_url ? [{ text: 'Download', onPress: () => downloadFile(item.attachment_url, item.attachment_name, item.attachment_mime_type) }] : []),
       { text: 'Cancel', style: 'cancel' },
     ];
     Alert.alert('Message Options', '', options);
@@ -697,7 +763,11 @@ const ChatScreen = () => {
   }
 
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={tw`flex-1 bg-gray-100`} keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 0}>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={tw`flex-1 bg-gray-100`}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 0}
+    >
       {Header}
       <FlatList
         ref={flatListRef}
@@ -741,7 +811,7 @@ const ChatScreen = () => {
           maxLength={2000}
           onSubmitEditing={() => handleSendMessage('text')}
         />
-        {message ? (
+        {message || pendingFile ? (
           <TouchableOpacity onPress={() => handleSendMessage('text')} style={tw`p-2 ml-2 bg-blue-500 rounded-full`} disabled={sending}>
             <Ionicons name={editingMessageId ? 'checkmark' : 'send'} size={24} color="white" />
           </TouchableOpacity>
@@ -759,7 +829,9 @@ const ChatScreen = () => {
             ) : pendingFile.mimeType?.startsWith('video/') ? (
               <VideoMessage uri={pendingFile.uri} />
             ) : (
-              <Text style={tw`text-white text-lg font-semibold`}>{pendingFile.fileName}</Text>
+              <Text style={tw`text-white text-lg font-semibold`}>
+                {pendingFile.fileName} {pendingFile.size ? `(${(pendingFile.size / 1024 / 1024).toFixed(2)} MB)` : ''}
+              </Text>
             )}
             <View style={tw`flex-row mt-4`}>
               <TouchableOpacity onPress={() => setPendingFile(null)} style={tw`p-3 bg-gray-700 rounded-full mx-2`}>
@@ -816,7 +888,7 @@ const ChatScreen = () => {
               </ScrollView>
               <TouchableOpacity onPress={() => setShowReadReceipts(null)} style={tw`mt-4 self-end`}>
                 <Text style={tw`text-blue-600 text-lg font-semibold`}>Close</Text>
-                </TouchableOpacity>
+              </TouchableOpacity>
             </View>
           </View>
         </Modal>

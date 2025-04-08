@@ -59,8 +59,8 @@
     "react-native-websocket": "^1.0.2",
     "react-native-webview": "13.12.5",
     "twrnc": "^4.6.1",
-    "zustand": "^5.0.3"
-
+    "zustand": "^5.0.3",
+    "expo-media-library": "~17.0.6"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

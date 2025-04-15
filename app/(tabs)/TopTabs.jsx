@@ -9,10 +9,11 @@ import FriendRequests from './FriendRequests'; // Ensure correct path and casing
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 import { Ionicons } from '@expo/vector-icons';
+import { API_URL, API_HOST,PLACEHOLDER_IMAGE } from '../utils/constants';
 
 const Tab = createMaterialTopTabNavigator();
 const { width } = Dimensions.get('window');
-const API_URL = "http://127.0.0.1:8000";
+
 
 export default function TopTabs() {
   const [friendRequests, setFriendRequests] = useState([]);
@@ -38,7 +39,7 @@ export default function TopTabs() {
     const token = await AsyncStorage.getItem('token');
     if (!token) return;
 
-    const websocket = new WebSocket(`ws://127.0.0.1:8000/ws/contacts/?token=${token}`);
+    const websocket = new WebSocket(`ws://${API_HOST}/ws/contacts/?token=${token}`);
 
     websocket.onopen = () => console.log('WebSocket connected for TopTabs');
     websocket.onmessage = (e) => {

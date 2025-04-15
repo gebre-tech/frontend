@@ -5,8 +5,8 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import { API_URL, API_HOST,PLACEHOLDER_IMAGE } from '../utils/constants';
 
-const API_URL = "http://127.0.0.1:8000";
 
 const FriendProfile = () => {
   const [profile, setProfile] = useState(null);
@@ -77,7 +77,7 @@ const FriendProfile = () => {
         <Text style={styles.backButtonText}>Back</Text>
       </TouchableOpacity>
       <Image
-        source={{ uri: profile.profile_picture || 'https://via.placeholder.com/150' }}
+        source={{ uri: profile.profile_picture || PLACEHOLDER_IMAGE }}
         style={styles.profileImage}
         resizeMode="cover"
         onError={() => console.log("Failed to load profile picture")}

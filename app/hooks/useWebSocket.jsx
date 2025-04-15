@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { API_HOST} from '../utils/constants';
 
 export const ConnectionStatus = {
   CONNECTING: 'connecting',
@@ -71,8 +72,8 @@ export const useWebSocket = ({ chatId, isGroup = false, userId, isGlobal = false
   const processedMessages = useRef(new Set()); // Track processed message IDs
 
   const url = useMemo(() => {
-    if (isGlobal) return 'ws://127.0.0.1:8000/ws/global/';
-    return `${isGroup ? 'ws://127.0.0.1:8000/ws/group_chat' : 'ws://127.0.0.1:8000/ws/chat'}/${chatId}/`;
+    if (isGlobal) return `ws://${API_HOST}/ws/global/`;
+    return `${isGroup ? `ws://${API_HOST}/ws/group_chat` : `ws://${API_HOST}/ws/chat`}/${chatId}/`;
   }, [chatId, isGroup, isGlobal]);
 
   const loadQueue = useCallback(async () => {

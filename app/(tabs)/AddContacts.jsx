@@ -6,8 +6,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import debounce from 'lodash.debounce';
+import { API_URL, API_HOST } from '../utils/constants';
 
-const API_URL = "http://127.0.0.1:8000";
 
 const AddContacts = () => {
   const navigation = useNavigation();
@@ -73,7 +73,7 @@ const AddContacts = () => {
       return;
     }
 
-    const websocket = new WebSocket(`ws://127.0.0.1:8000/ws/contacts/?token=${token}`);
+    const websocket = new WebSocket(`ws://${API_HOST}/ws/contacts/?token=${token}`);
 
     websocket.onopen = () => console.log('WebSocket connected for AddContacts');
     websocket.onmessage = (e) => {

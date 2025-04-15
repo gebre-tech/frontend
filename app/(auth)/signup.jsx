@@ -2,6 +2,7 @@
 import React, { useState } from "react";
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from "react-native";
 import axios from "axios";
+import { API_URL } from "../utils/constants"; // Adjust the import path as necessary
 
 const Signup = ({ navigation }) => {
   const [email, setEmail] = useState("");
@@ -28,7 +29,7 @@ const Signup = ({ navigation }) => {
     setError("");
 
     try {
-      const response = await axios.post("http://127.0.0.1:8000/auth/register/", {
+      const response = await axios.post(`${API_URL}/auth/register/`, {
         username,
         email,
         first_name: firstName,

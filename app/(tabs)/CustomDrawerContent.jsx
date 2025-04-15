@@ -14,9 +14,10 @@ import axios from 'axios';
 import { AuthContext } from '../../context/AuthContext';
 import { Dimensions } from 'react-native';
 import debounce from 'lodash/debounce';
+import { API_URL, API_HOST,PLACEHOLDER_IMAGE } from '../utils/constants';
 
-const API_URL = "http://127.0.0.1:8000";
-const WS_URL = "ws://127.0.0.1:8000/ws/profile/";
+
+const WS_URL = `ws://${API_HOST}/ws/profile/`;
 const { width } = Dimensions.get('window');
 
 const COLORS = {
@@ -63,7 +64,7 @@ export default function CustomDrawerContent(props) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [bio, setBio] = useState("");
-  const [profileImage, setProfileImage] = useState('https://via.placeholder.com/100');
+  const [profileImage, setProfileImage] = useState(PLACEHOLDER_IMAGE);
   const [lastSeen, setLastSeen] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -93,7 +94,7 @@ export default function CustomDrawerContent(props) {
       setLastSeen(profileData.last_seen);
       const newProfileImage = profileData.profile_picture 
         ? `${profileData.profile_picture}?t=${Date.now()}` 
-        : 'https://via.placeholder.com/100';
+        : PLACEHOLDER_IMAGE;
       setProfileImage(newProfileImage);
       console.log("Profile image set to (fetch):", newProfileImage);
     } catch (error) {
@@ -103,7 +104,7 @@ export default function CustomDrawerContent(props) {
         setLastName(user?.last_name || "");
         setBio("");
         setLastSeen(null);
-        setProfileImage('https://via.placeholder.com/100');
+        setProfileImage(PLACEHOLDER_IMAGE);
       } else {
         console.error("Error fetching profile:", error);
         setAlert({ visible: true, title: "Error", message: "Failed to load profile." });
@@ -135,7 +136,7 @@ export default function CustomDrawerContent(props) {
           setBio(data.bio);
           const newProfileImage = data.profile_picture 
             ? `${data.profile_picture}?t=${Date.now()}` 
-            : 'https://via.placeholder.com/100';
+            : PLACEHOLDER_IMAGE;
           setProfileImage(newProfileImage);
           console.log("Profile image set to (WebSocket):", newProfileImage);
         }
@@ -266,7 +267,7 @@ export default function CustomDrawerContent(props) {
       console.log("Raw updated profile data from backend:", updatedProfile);  // Log raw response
       const newProfileImage = updatedProfile.profile_picture 
         ? `${updatedProfile.profile_picture}?t=${Date.now()}` 
-        : 'https://via.placeholder.com/100';
+        : PLACEHOLDER_IMAGE;
       setProfileImage(newProfileImage);
       setUsername(updatedProfile.user.username);
       setFirstName(updatedProfile.user.first_name);

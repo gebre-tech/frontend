@@ -61,7 +61,6 @@ const VideoMessage = ({ uri }) => {
     />
   );
 };
-
 // Main ChatScreen Component
 const ChatScreen = () => {
   const route = useRoute();
@@ -322,6 +321,11 @@ const ChatScreen = () => {
   }, [unreadMessages, undeliveredMessages, isAtBottom, chatId, throttledMarkAsDelivered, throttledMarkAsRead]);
 
   const getMimeTypeFromUri = (uri, fileName) => {
+    // If both uri and fileName are undefined, return a default MIME type
+    if (!uri && !fileName) {
+      return 'application/octet-stream'; // Default MIME type
+    }
+  
     const ext = (fileName || uri).split('.').pop().toLowerCase();
     const mimeTypes = {
       jpg: 'image/jpeg',
@@ -550,6 +554,11 @@ const ChatScreen = () => {
     if (Platform.OS === 'web') {
       const result = await DocumentPicker.getDocumentAsync({ type: '*/*' });
       if (result.type !== 'cancel') {
+        // Validate that uri or name exists
+        if (!result.uri && !result.name) {
+          Alert.alert('Error', 'Failed to pick file: No URI or name provided');
+          return;
+        }
         const mimeType = result.mimeType || getMimeTypeFromUri(result.uri, result.name);
         setPendingFile({
           uri: result.uri,
@@ -560,9 +569,14 @@ const ChatScreen = () => {
       }
       return;
     }
-
+  
     const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
     if (result.type !== 'cancel') {
+      // Validate that uri or name exists
+      if (!result.uri && !result.name) {
+        Alert.alert('Error', 'Failed to pick file: No URI or name provided');
+        return;
+      }
       const fileInfo = await FileSystem.getInfoAsync(result.uri, { size: true });
       const mimeType = result.mimeType || getMimeTypeFromUri(result.uri, result.name);
       setPendingFile({

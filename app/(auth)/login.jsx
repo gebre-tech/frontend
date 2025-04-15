@@ -3,6 +3,7 @@ import React, { useState, useContext } from "react";
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Alert } from "react-native";
 import { AuthContext } from "../../context/AuthContext";
 import axios from "axios";
+import { API_URL } from "../utils/constants";
 
 const Login = ({ navigation }) => {
   const { login, loading, error } = useContext(AuthContext);
@@ -26,7 +27,7 @@ const Login = ({ navigation }) => {
 
     setForgotLoading(true);
     try {
-      const response = await axios.post("http://127.0.0.1:8000/auth/forgot-password/", { email: forgotEmail });
+      const response = await axios.post(`${API_URL}/auth/forgot-password/`, { email: forgotEmail });
       Alert.alert("Success", response.data.message);
       setForgotModalVisible(false);
       setForgotEmail("");

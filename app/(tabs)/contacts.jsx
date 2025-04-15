@@ -17,8 +17,7 @@ import { AuthContext } from "../../context/AuthContext";
 import { Ionicons } from "@expo/vector-icons";
 import debounce from "lodash/debounce";
 import tw from "twrnc";
-
-const API_URL = "http://127.0.0.1:8000";
+import { API_URL, API_HOST,PLACEHOLDER_IMAGE } from '../utils/constants';
 
 const Contacts = () => {
   const [contacts, setContacts] = useState([]);
@@ -147,7 +146,7 @@ const Contacts = () => {
     const token = await AsyncStorage.getItem("token");
     if (!token) return;
 
-    const wsInstance = new WebSocket(`ws://127.0.0.1:8000/ws/contacts/?token=${token}`);
+    const wsInstance = new WebSocket(`ws://${API_HOST}/ws/contacts/?token=${token}`);
     wsInstance.onopen = () => console.log("Contacts WebSocket connected");
     wsInstance.onmessage = (e) => {
       try {
@@ -217,7 +216,8 @@ const Contacts = () => {
         <View style={tw`relative`}>
           <Image
             source={{
-              uri: item.friend.profile_picture || "https://via.placeholder.com/40",
+              uri: item.friend.profile_picture || PLACEHOLDER_IMAGE,
+              // Fallback to placeholder image if no profile picture is available 
             }}
             style={tw`w-12 h-12 rounded-full mr-3`}
           />

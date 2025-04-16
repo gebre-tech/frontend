@@ -42,22 +42,38 @@ const VideoMessage = ({ uri }) => {
 
   useEffect(() => {
     return () => {
-      if (videoRef.current) videoRef.current.stopAsync().catch(() => {});
+      if (videoRef.current) {
+        videoRef.current.stopAsync().catch(() => {});
+      }
     };
   }, [uri]);
 
-  return !uri ? (
-    <Text style={tw`text-gray-500`}>Loading...</Text>
-  ) : error ? (
-    <Text style={tw`text-red-500`}>{error}</Text>
-  ) : (
+  const handleError = (error) => {
+    console.error('Video error:', error);
+    setError(error.message || 'Failed to load video');
+  };
+
+  if (!uri) {
+    return <Text style={tw`text-gray-500`}>Loading video...</Text>;
+  }
+
+  if (error) {
+    return (
+      <View style={tw`w-64 h-64 rounded-2xl bg-gray-200 justify-center items-center`}>
+        <Text style={tw`text-red-500 text-center`}>{error}</Text>
+      </View>
+    );
+  }
+
+  return (
     <Video
       ref={videoRef}
       source={{ uri }}
       style={tw`w-64 h-64 rounded-2xl`}
       useNativeControls
       resizeMode="cover"
-      onError={(e) => setError(e.error?.message || 'Unknown error')}
+      onError={handleError}
+      shouldPlay={false}
     />
   );
 };
@@ -369,13 +385,26 @@ const ChatScreen = () => {
 
           const token = await AsyncStorage.getItem('token');
           const formData = new FormData();
-          const uri = Platform.OS === 'android' && !attachment.uri.startsWith('file://') ? `file://${attachment.uri}` : attachment.uri;
+          //const uri = Platform.OS === 'android' && !attachment.uri.startsWith('file://') ? `file://${attachment.uri}` : attachment.uri;
 
-          if (Platform.OS === 'web' && attachment.uri.startsWith('blob:')) {
-            const response = await fetch(attachment.uri);
-            const blob = await response.blob();
-            formData.append('file', new File([blob], attachment.fileName, { type: attachment.mimeType }));
+          if (Platform.OS === 'web') {
+            if (attachment.uri.startsWith('data:')) {
+              // Base64 image
+              formData.append('file', attachment.uri);
+            } else if (attachment.uri.startsWith('blob:')) {
+              // Blob from file input
+              const response = await fetch(attachment.uri);
+              const blob = await response.blob();
+              formData.append('file', new File([blob], attachment.fileName, { 
+                type: attachment.mimeType 
+              }));
+            }
           } else {
+            // Native platforms
+            const uri = Platform.OS === 'android' && !attachment.uri.startsWith('file://') 
+              ? `file://${attachment.uri}` 
+              : attachment.uri;
+  
             formData.append('file', {
               uri,
               type: attachment.mimeType || getMimeTypeFromUri(uri, attachment.fileName),
@@ -383,30 +412,27 @@ const ChatScreen = () => {
             });
           }
 
-          console.log('Sending attachment:', { uri: attachment.uri, mimeType: attachment.mimeType, fileName: attachment.fileName });
-
-          const response = await withTokenRefresh(() =>
-            axios.post(
-              chatId ? `${API_URL}/chat/upload-attachment/${chatId}/` : `${API_URL}/chat/send-message/`,
-              chatId ? formData : { ...formData, receiver_id: friendId, content: '', message_type: type },
-              {
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  'Content-Type': 'multipart/form-data',
-                },
-              }
-            ).catch((error) => {
-              console.error('Upload failed with response:', error.response?.data);
-              throw error;
-            })
-          );
-          attachmentUrl = response.data.attachment_url;
-          attachmentSize = response.data.attachment_size || attachmentSize;
-          if (!chatId) {
-            newChatId = response.data.chat.id;
-            setChatId(newChatId);
-          }
+        const response = await withTokenRefresh(() =>
+          axios.post(
+            chatId ? `${API_URL}/chat/upload-attachment/${chatId}/` : `${API_URL}/chat/send-message/`,
+            formData,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'multipart/form-data',
+              },
+            }
+          )
+        );
+        
+        attachmentUrl = response.data.attachment_url;
+        attachmentSize = response.data.attachment_size || attachmentSize;
+        
+        if (!chatId) {
+          newChatId = response.data.chat.id;
+          setChatId(newChatId);
         }
+      }
 
         const tempId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
         const timestamp = schedule ? schedule.toISOString() : new Date().toISOString();
@@ -515,38 +541,45 @@ const ChatScreen = () => {
   });
 
   const pickMedia = useCallback(async () => {
-    if (Platform.OS === 'web') {
-      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.All, quality: 0.8 });
+    try {
+      let result;
+      if (Platform.OS === 'web') {
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.All,
+          quality: 0.8,
+          allowsMultipleSelection: false,
+          base64: true, // Important for web
+        });
+      } else {
+        const { status } = await MediaLibrary.requestPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission required', 'Please allow media access.');
+          return;
+        }
+        
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.All,
+          quality: 0.8,
+          allowsEditing: false,
+        });
+      }
+  
       if (!result.canceled && result.assets?.[0]) {
         const asset = result.assets[0];
         const mimeType = asset.mimeType || getMimeTypeFromUri(asset.uri, asset.fileName);
+        
         setPendingFile({
-          uri: asset.uri,
+          uri: Platform.OS === 'web' && asset.base64 
+            ? `data:${mimeType};base64,${asset.base64}`
+            : asset.uri,
           mimeType,
           fileName: asset.fileName || `media_${Date.now()}.${mimeType.split('/')[1] || 'bin'}`,
           size: asset.fileSize || null,
         });
       }
-      return;
-    }
-
-    const { status } = await MediaLibrary.requestPermissionsAsync();
-    if (status !== 'granted') return Alert.alert('Permission required', 'Please allow media access.');
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
-      quality: 0.8,
-      allowsEditing: false,
-    });
-    if (!result.canceled && result.assets?.[0]) {
-      const asset = result.assets[0];
-      const fileInfo = await FileSystem.getInfoAsync(asset.uri, { size: true });
-      const mimeType = asset.mimeType || getMimeTypeFromUri(asset.uri, asset.fileName);
-      setPendingFile({
-        uri: asset.uri,
-        mimeType,
-        fileName: asset.fileName || `media_${Date.now()}.${mimeType.split('/')[1] || 'bin'}`,
-        size: fileInfo.size,
-      });
+    } catch (error) {
+      console.error('Error picking media:', error);
+      Alert.alert('Error', 'Failed to pick media');
     }
   }, []);
 

@@ -1,6 +1,6 @@
 // Constants for the application
 // These constants are used throughout the application for various purposes
-export const API_HOST = "192.168.137.1:8000";
+export const API_HOST = "127.0.0.1:8000";
 export const API_URL = `http://${API_HOST}`;// Adjust this to your backend URL
 export const PLACEHOLDER_IMAGE = 'https://via.placeholder.com/150'; // Placeholder image URL
 export const REACTION_EMOJIS = ['❤️', '😂', '😮', '😢', '👍']; // Reaction emojis for messages

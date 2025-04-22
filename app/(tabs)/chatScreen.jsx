@@ -400,7 +400,16 @@ const ChatScreen = () => {
       mp4: 'video/mp4',
       mov: 'video/quicktime',
       mp3: 'audio/mpeg',
+      mpeg: 'audio/mpeg',
+      'x-m4a': 'audio/x-m4a',
+      m4a: 'audio/x-m4a',
+      m4r: 'audio/x-m4r',
+      ogg: 'audio/ogg',
       wav: 'audio/wav',
+      flac: 'audio/flac',
+      aac: 'audio/aac',
+      amr: 'audio/amr',
+      wma: 'audio/x-ms-wma',
       pdf: 'application/pdf',
       doc: 'application/msword',
       docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -462,7 +471,7 @@ const ChatScreen = () => {
           determinedType = 'image';
         } else if (mimeType?.startsWith('video/') || ['mp4', 'mov'].includes(fileExtension)) {
           determinedType = 'video';
-        } else if (mimeType?.startsWith('audio/') || ['mp3', 'wav'].includes(fileExtension)) {
+        } else if (mimeType?.startsWith('audio/') || ['mp3', 'mpeg', 'x-m4a', 'm4a', 'm4r', 'ogg', 'wav', 'flac', 'aac', 'amr', 'wma'].includes(fileExtension)) {
           determinedType = 'audio';
         } else {
           determinedType = 'file';
@@ -505,7 +514,6 @@ const ChatScreen = () => {
             }
           )
         ).catch((error) => {
-          // Enhanced error handling for upload failures
           if (error.response?.status === 413) {
             throw new Error('File size too large. Maximum allowed is 100MB.');
           } else if (error.response?.status === 400) {
@@ -840,9 +848,12 @@ const ChatScreen = () => {
     if (!item.attachment_url) return null;
 
     const fileExtension = (item.attachment_url || item.attachment_name || '').split('.').pop()?.toLowerCase();
-    const isImage = ['jpg', 'jpeg', 'png', 'gif'].includes(fileExtension);
-    const isVideo = ['mp4', 'mov'].includes(fileExtension);
-    const isAudio = ['mp3', 'wav'].includes(fileExtension);
+    const mimeType = item.attachment_mime_type || getMimeTypeFromUri(item.attachment_url, item.attachment_name);
+    const isImage = mimeType?.startsWith('image/') || ['jpg', 'jpeg', 'png', 'gif'].includes(fileExtension);
+    const isVideo = mimeType?.startsWith('video/') || ['mp4', 'mov'].includes(fileExtension);
+    const isAudio = mimeType?.startsWith('audio/') || [
+      'mp3', 'mpeg', 'x-m4a', 'm4a', 'm4r', 'ogg', 'wav', 'flac', 'aac', 'amr', 'wma'
+    ].includes(fileExtension);
 
     if (item.message_type === 'image' || (item.message_type === 'file' && isImage)) {
       return (
@@ -916,7 +927,7 @@ const ChatScreen = () => {
       );
     }
     return null;
-  }, [getFileIcon, isConnected, retryMessage, setShowReadReceipts]);
+  }, [getFileIcon, isConnected, retryMessage, getMimeTypeFromUri, setShowReadReceipts]);
 
   const renderMessage = useCallback(
     ({ item }) => {

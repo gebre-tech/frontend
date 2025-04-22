@@ -1,3 +1,4 @@
+// app/components/AudioMessage.jsx
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { View, TouchableOpacity, ActivityIndicator, Text, ProgressViewIOS, Platform, Animated } from 'react-native';
 import { Audio } from 'expo-av';

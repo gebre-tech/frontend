@@ -1,4 +1,4 @@
-// src/navigation/TopTabs.js
+// app/(tabs)/TopTabs.js
 import React, { useState, useEffect, useCallback } from 'react';
 import { createMaterialTopTabNavigator } from '@react-navigation/material-top-tabs';
 import { Dimensions, View, Text, StyleSheet } from 'react-native';

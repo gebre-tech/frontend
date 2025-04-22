@@ -1,4 +1,4 @@
-// src/navigation/Home.js
+// app/(tabs)/Home.js
 import React from 'react';
 import { createDrawerNavigator } from '@react-navigation/drawer';
 import { MaterialCommunityIcons } from '@expo/vector-icons';

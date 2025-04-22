@@ -65,7 +65,8 @@
     "expo-dev-client": "~5.0.20",
     "@react-native-community/netinfo": "11.4.1",
     "expo-video-thumbnails": "~9.0.3",
-    "@react-native-community/slider": "4.5.5"
+    "@react-native-community/slider": "4.5.5",
+    "expo-audio": "~0.3.5"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

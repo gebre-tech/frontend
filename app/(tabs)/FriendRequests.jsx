@@ -1,12 +1,10 @@
 // app/tabs/FriendRequests.jsx
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
-import { API_URL, API_HOST,PLACEHOLDER_IMAGE } from '../utils/constants';
-
+import { API_URL, API_HOST } from '../utils/constants';
 
 const FriendRequests = () => {
   const navigation = useNavigation();
@@ -21,7 +19,7 @@ const FriendRequests = () => {
       const response = await axios.get(`${API_URL}/contacts/requests/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setReceivedRequests(response.data);
+      setReceivedRequests(response.data || []);
     } catch (err) {
       console.error('Error fetching received requests:', err);
     }
@@ -33,7 +31,7 @@ const FriendRequests = () => {
       const response = await axios.get(`${API_URL}/contacts/sent_requests/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setSentRequests(response.data);
+      setSentRequests(response.data || []);
     } catch (err) {
       console.error('Error fetching sent requests:', err);
     }
@@ -54,18 +52,25 @@ const FriendRequests = () => {
     websocket.onopen = () => console.log('WebSocket connected for FriendRequests');
     websocket.onmessage = (e) => {
       const data = JSON.parse(e.data);
-      if (data.type === 'friend_request') {
-        setReceivedRequests((prev) => [...prev, data.request]);
+      if (data.type === 'friend_request_received') {
+        setReceivedRequests((prev) => {
+          const exists = prev.some((req) => req.id === data.request.id);
+          if (exists) return prev;
+          return [...prev, data.request];
+        });
       } else if (data.type === 'friend_request_accepted') {
         setReceivedRequests((prev) => prev.filter((req) => req.id !== data.requestId));
         setSentRequests((prev) => prev.filter((req) => req.id !== data.requestId));
-        Alert.alert('Notification', 'Friend request accepted!');
         navigation.navigate('Contacts', { refresh: true });
       } else if (data.type === 'friend_request_rejected') {
         setReceivedRequests((prev) => prev.filter((req) => req.id !== data.requestId));
-        Alert.alert('Notification', 'Friend request rejected.');
+        setSentRequests((prev) => prev.filter((req) => req.id !== data.requestId));
       } else if (data.type === 'friend_request_sent') {
-        setSentRequests((prev) => [...prev, data.request]);
+        setSentRequests((prev) => {
+          const exists = prev.some((req) => req.id === data.request.id);
+          if (exists) return prev;
+          return [...prev, data.request];
+        });
       }
     };
     websocket.onerror = (e) => console.error('WebSocket error:', e);
@@ -111,6 +116,7 @@ const FriendRequests = () => {
 
   const clearNotifications = () => {
     setReceivedRequests([]);
+    setSentRequests([]);
   };
 
   useEffect(() => {

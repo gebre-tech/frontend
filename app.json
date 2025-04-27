@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "messages",
-    "slug": "messages",
+    "name": "Ethio Secure Messages",
+    "slug": "ethio-secure-messages",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
@@ -41,7 +41,9 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "expo-secure-store",
+      "react-native-video"
     ],
     "experiments": {
       "typedRoutes": true

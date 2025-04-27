@@ -6,7 +6,7 @@ import axios from "axios";
 import { API_URL } from "../utils/constants";
 
 const Login = ({ navigation }) => {
-  const { login, loading, error } = useContext(AuthContext);
+  const { login, loading, error, keys } = useContext(AuthContext);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [forgotModalVisible, setForgotModalVisible] = useState(false);
@@ -14,9 +14,18 @@ const Login = ({ navigation }) => {
   const [forgotLoading, setForgotLoading] = useState(false);
 
   const handleLogin = async () => {
-    if (!email || !password) return;
+    if (!email || !password) {
+      Alert.alert("Error", "Please enter your email and password.");
+      return;
+    }
+
     const success = await login(email, password);
-    if (success) navigation.reset({ index: 0, routes: [{ name: "Home" }] });
+    if (success) {
+      if (!keys.publicKey || !keys.privateKey) {
+        Alert.alert("Warning", "Keys not found on this device. You may need to transfer your private key.");
+      }
+      navigation.reset({ index: 0, routes: [{ name: "Home" }] });
+    }
   };
 
   const handleForgotPassword = async () => {
@@ -76,7 +85,6 @@ const Login = ({ navigation }) => {
         <Text style={styles.link}>Create an account</Text>
       </TouchableOpacity>
 
-      {/* Forgot Password Modal */}
       <Modal visible={forgotModalVisible} animationType="slide" transparent>
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>

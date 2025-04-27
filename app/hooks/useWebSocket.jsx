@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_HOST} from '../utils/constants';
+import { API_HOST } from '../utils/constants';
+import { useSyncExternalStore } from 'react';
 
 export const ConnectionStatus = {
   CONNECTING: 'connecting',
@@ -20,6 +21,7 @@ const WebSocketEventTypes = {
   GROUP_UPDATE: 'group_update',
   ONLINE_STATUS: 'online_status',
   MESSAGE_DELIVERED: 'message_delivered',
+  MESSAGE_STATUS: 'message_status',
 };
 
 class EventEmitter {
@@ -45,8 +47,6 @@ class EventEmitter {
   }
 }
 
-const addJitter = (delay) => delay + Math.random() * 1000;
-
 const logger = {
   info: (...args) => console.log('[useWebSocket]', ...args),
   error: (...args) => console.error('[useWebSocket]', ...args),
@@ -54,27 +54,103 @@ const logger = {
 };
 
 export const useWebSocket = ({ chatId, isGroup = false, userId, isGlobal = false }) => {
-  const [isConnected, setIsConnected] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState(ConnectionStatus.CONNECTING);
   const [lastError, setLastError] = useState(null);
-  const [typingUsers, setTypingUsers] = useState([]);
-  const [onlineUsers, setOnlineUsers] = useState(new Set());
-  const [newMessageNotifications, setNewMessageNotifications] = useState([]);
-
-  const ws = useRef(null);
+  const wsRef = useRef(null);
   const eventEmitter = useRef(new EventEmitter());
-  const pingInterval = useRef(null);
-  const reconnectTimeout = useRef(null);
   const reconnectAttempts = useRef(0);
   const messageQueue = useRef([]);
   const isMountedRef = useRef(true);
-  const lastPong = useRef(Date.now());
-  const processedMessages = useRef(new Set()); // Track processed message IDs
+  const processedMessages = useRef(new Set());
+  const batchedMessages = useRef([]);
+  const batchTimeout = useRef(null);
 
   const url = useMemo(() => {
     if (isGlobal) return `ws://${API_HOST}/ws/global/`;
     return `${isGroup ? `ws://${API_HOST}/ws/group_chat` : `ws://${API_HOST}/ws/chat`}/${chatId}/`;
   }, [chatId, isGroup, isGlobal]);
+
+  // Store for derived state (typingUsers, onlineUsers, notifications)
+  const subscribeToStore = useCallback((selector) => {
+    let state = {
+      typingUsers: [],
+      onlineUsers: new Set(),
+      newMessageNotifications: [],
+    };
+
+    const subscribe = (onStoreChange) => {
+      const listener = (event, data) => {
+        if (!isMountedRef.current) return;
+        switch (event) {
+          case WebSocketEventTypes.TYPING:
+            if (data.user !== userId) {
+              state = {
+                ...state,
+                typingUsers: [...new Set([...state.typingUsers, data.username])].slice(-3),
+              };
+              setTimeout(() => {
+                if (isMountedRef.current) {
+                  state = {
+                    ...state,
+                    typingUsers: state.typingUsers.filter((u) => u !== data.username),
+                  };
+                  onStoreChange();
+                }
+              }, 5000);
+            }
+            break;
+          case WebSocketEventTypes.ONLINE_STATUS:
+            state = {
+              ...state,
+              onlineUsers: new Set(state.onlineUsers),
+            };
+            if (data.status === 'online') state.onlineUsers.add(data.user_id);
+            else state.onlineUsers.delete(data.user_id);
+            onStoreChange();
+            break;
+          case WebSocketEventTypes.MESSAGE:
+          case WebSocketEventTypes.MESSAGE_DELIVERED:
+            if (data.message?.id && !processedMessages.current.has(data.message.id)) {
+              state = {
+                ...state,
+                newMessageNotifications: [
+                  ...state.newMessageNotifications,
+                  {
+                    chatId: data.message.chat.id,
+                    messageId: data.message.id,
+                    message: data.message.content || data.message.message_type,
+                    sender: data.message.sender.username,
+                    timestamp: data.message.timestamp,
+                  },
+                ],
+              };
+              processedMessages.current.add(data.message.id);
+              onStoreChange();
+            }
+            break;
+        }
+      };
+
+      const unsubscribers = [
+        eventEmitter.current.on(WebSocketEventTypes.TYPING, listener.bind(null, WebSocketEventTypes.TYPING)),
+        eventEmitter.current.on(WebSocketEventTypes.ONLINE_STATUS, listener.bind(null, WebSocketEventTypes.ONLINE_STATUS)),
+        eventEmitter.current.on(WebSocketEventTypes.MESSAGE, listener.bind(null, WebSocketEventTypes.MESSAGE)),
+        eventEmitter.current.on(WebSocketEventTypes.MESSAGE_DELIVERED, listener.bind(null, WebSocketEventTypes.MESSAGE_DELIVERED)),
+      ];
+
+      return () => unsubscribers.forEach((unsub) => unsub());
+    };
+
+    return useSyncExternalStore(
+      subscribe,
+      () => selector(state),
+      () => selector(state)
+    );
+  }, [userId]);
+
+  const typingUsers = subscribeToStore((state) => state.typingUsers);
+  const onlineUsers = subscribeToStore((state) => state.onlineUsers);
+  const newMessageNotifications = subscribeToStore((state) => state.newMessageNotifications);
 
   const loadQueue = useCallback(async () => {
     try {
@@ -100,7 +176,7 @@ export const useWebSocket = ({ chatId, isGroup = false, userId, isGlobal = false
   }, [chatId, isGlobal]);
 
   const connect = useCallback(async () => {
-    if (ws.current?.readyState === WebSocket.OPEN) {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
       logger.info('WebSocket already connected');
       return;
     }
@@ -122,43 +198,36 @@ export const useWebSocket = ({ chatId, isGroup = false, userId, isGlobal = false
       return;
     }
 
-    ws.current = new WebSocket(`${url}?token=${token}`);
+    wsRef.current = new WebSocket(`${url}?token=${token}`);
 
-    ws.current.onopen = () => {
+    wsRef.current.onopen = () => {
       if (!isMountedRef.current) return;
-      setIsConnected(true);
       setConnectionStatus(ConnectionStatus.CONNECTED);
       setLastError(null);
       reconnectAttempts.current = 0;
-      lastPong.current = Date.now();
       logger.info('WebSocket connected');
 
-      pingInterval.current = setInterval(() => {
-        if (ws.current?.readyState === WebSocket.OPEN) {
-          const now = Date.now();
-          if (now - lastPong.current > 60000) {
-            logger.warn('No pong received for 60s, closing connection');
-            ws.current.close(4004, 'Heartbeat timeout');
-            return;
-          }
-          ws.current.send(JSON.stringify({ type: 'ping' }));
-        } else {
-          clearInterval(pingInterval.current);
-        }
-      }, 30000);
-
+      // Send queued messages
       if (messageQueue.current.length) {
         messageQueue.current.forEach((msg) => {
-          if (ws.current?.readyState === WebSocket.OPEN) {
-            ws.current.send(JSON.stringify(msg));
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify(msg));
           }
         });
         messageQueue.current = [];
         saveQueue();
       }
+
+      // Start ping interval
+      const pingInterval = setInterval(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 60000);
+      wsRef.current.pingInterval = pingInterval;
     };
 
-    ws.current.onmessage = (event) => {
+    wsRef.current.onmessage = (event) => {
       if (!isMountedRef.current) return;
       try {
         const data = JSON.parse(event.data);
@@ -166,154 +235,99 @@ export const useWebSocket = ({ chatId, isGroup = false, userId, isGlobal = false
           setLastError(data.error);
           logger.error('Server error:', data.error);
           if (data.error.includes('token')) {
-            ws.current.close(4003, 'Auth failed');
+            wsRef.current.close(4003, 'Auth failed');
           }
           return;
         }
 
-        if (data.message?.id && processedMessages.current.has(data.message.id)) {
-          logger.info(`Message ${data.message.id} already processed, skipping`);
-          return;
-        }
+        // Batch messages to reduce state updates
+        batchedMessages.current.push(data);
+        if (!batchTimeout.current) {
+          batchTimeout.current = setTimeout(() => {
+            batchedMessages.current.forEach((batchedData) => {
+              if (batchedData.message?.id && processedMessages.current.has(batchedData.message.id)) {
+                logger.info(`Message ${batchedData.message.id} already processed, skipping`);
+                return;
+              }
 
-        switch (data.type) {
-          case 'ack':
-            eventEmitter.current.emit(WebSocketEventTypes.ACK, data);
-            break;
-          case 'typing':
-            if (data.user !== userId) {
-              setTypingUsers((prev) => {
-                if (prev.includes(data.username)) return prev;
-                const updated = [...new Set([...prev, data.username])].slice(-3);
-                return updated;
-              });
-              setTimeout(() => {
-                if (isMountedRef.current) {
-                  setTypingUsers((prev) => prev.filter((u) => u !== data.username));
-                }
-              }, 5000);
-            }
-            eventEmitter.current.emit(WebSocketEventTypes.TYPING, data);
-            break;
-          case 'pong':
-            lastPong.current = Date.now();
-            eventEmitter.current.emit(WebSocketEventTypes.PONG, data);
-            break;
-          case 'reaction':
-            eventEmitter.current.emit(WebSocketEventTypes.REACTION, data);
-            break;
-          case 'pin':
-            eventEmitter.current.emit(WebSocketEventTypes.PIN, data);
-            break;
-          case 'group_update':
-            eventEmitter.current.emit(WebSocketEventTypes.GROUP_UPDATE, data);
-            break;
-          case 'online_status':
-            setOnlineUsers((prev) => {
-              const updated = new Set(prev);
-              if (data.status === 'online') updated.add(data.user_id);
-              else updated.delete(data.user_id);
-              return updated;
+              eventEmitter.current.emit(batchedData.type, batchedData);
+              if (batchedData.message?.id) {
+                processedMessages.current.add(batchedData.message.id);
+              }
             });
-            eventEmitter.current.emit(WebSocketEventTypes.ONLINE_STATUS, data);
-            break;
-          case 'message_delivered':
-            eventEmitter.current.emit(WebSocketEventTypes.MESSAGE_DELIVERED, data);
-            break;
-          default:
-            if (data.message) {
-              processedMessages.current.add(data.message.id);
-              setNewMessageNotifications((prev) => {
-                const exists = prev.some((notif) => notif.messageId === data.message.id);
-                if (exists) return prev;
-                return [
-                  ...prev,
-                  {
-                    chatId: data.message.chat.id,
-                    messageId: data.message.id,
-                    message: data.message.content || data.message.message_type,
-                    sender: data.message.sender.username,
-                    timestamp: data.message.timestamp,
-                  },
-                ];
-              });
-              eventEmitter.current.emit(WebSocketEventTypes.MESSAGE, data.message);
-            } else {
-              logger.warn('Unknown message type:', data.type);
-            }
+            batchedMessages.current = [];
+            batchTimeout.current = null;
+          }, 100);
         }
       } catch (error) {
         logger.error('Error parsing WebSocket message:', error);
       }
     };
 
-    ws.current.onerror = (error) => {
+    wsRef.current.onerror = (error) => {
       if (!isMountedRef.current) return;
       setLastError('WebSocket connection failed');
       setConnectionStatus(ConnectionStatus.FAILED);
-      setIsConnected(false);
       logger.error('WebSocket error:', error);
     };
 
-    ws.current.onclose = (event) => {
+    wsRef.current.onclose = (event) => {
       if (!isMountedRef.current) return;
-      setIsConnected(false);
       setConnectionStatus(ConnectionStatus.CLOSED);
-      clearInterval(pingInterval.current);
+      clearInterval(wsRef.current?.pingInterval);
       logger.info('WebSocket closed:', event.code, event.reason);
 
       if (event.code !== 1000 && reconnectAttempts.current < maxAttempts) {
         const baseDelay = Math.min(5000 * Math.pow(2, reconnectAttempts.current), 60000);
-        const delay = addJitter(baseDelay);
+        const delay = baseDelay + Math.random() * 1000;
         logger.info(`Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempts.current + 1})`);
-        reconnectTimeout.current = setTimeout(() => {
-          reconnectAttempts.current += 1;
-          connect();
+        setTimeout(() => {
+          if (isMountedRef.current) {
+            reconnectAttempts.current += 1;
+            connect();
+          }
         }, delay);
       }
     };
-  }, [chatId, userId, url, saveQueue, isGlobal]);
+  }, [url, saveQueue]);
 
-  const sendMessage = useCallback(
-    (message) => {
-      if (message.type === 'message' && !message.content && !message.attachment_url) {
-        logger.warn('Skipping empty message:', message);
-        return false;
-      }
-  
-      // Deduplicate messages in the queue
-      const isDuplicate = messageQueue.current.some(
-        (queuedMsg) =>
-          queuedMsg.type === message.type &&
-          queuedMsg.content === message.content &&
-          queuedMsg.chat_id === message.chat_id &&
-          queuedMsg.id === message.id
-      );
-  
-      if (isDuplicate) {
-        logger.warn('Duplicate message in queue, skipping:', message);
-        return false;
-      }
-  
-      if (ws.current?.readyState === WebSocket.OPEN) {
-        ws.current.send(JSON.stringify(message));
-        return true;
-      } else {
-        messageQueue.current.push(message);
-        saveQueue();
-        logger.info('Message queued:', message);
-        return false;
-      }
-    },
-    [saveQueue]
-  );
+  const sendMessage = useCallback((message) => {
+    if (message.type === 'message' && !message.content && !message.attachment_url) {
+      logger.warn('Skipping empty message:', message);
+      return false;
+    }
+
+    const isDuplicate = messageQueue.current.some(
+      (queuedMsg) =>
+        queuedMsg.type === message.type &&
+        queuedMsg.content === message.content &&
+        queuedMsg.chat_id === message.chat_id &&
+        queuedMsg.id === message.id
+    );
+
+    if (isDuplicate) {
+      logger.warn('Duplicate message in queue, skipping:', message);
+      return false;
+    }
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(message));
+      return true;
+    } else {
+      messageQueue.current.push(message);
+      saveQueue();
+      logger.info('Message queued:', message);
+      return false;
+    }
+  }, [saveQueue]);
 
   const closeConnection = useCallback(() => {
-    if (ws.current) {
-      ws.current.close(1000, 'Component unmounted');
+    if (wsRef.current) {
+      clearInterval(wsRef.current.pingInterval);
+      wsRef.current.close(1000, 'Component unmounted');
+      wsRef.current = null;
     }
-    clearInterval(pingInterval.current);
-    clearTimeout(reconnectTimeout.current);
+    clearTimeout(batchTimeout.current);
     logger.info('WebSocket connection closed');
   }, []);
 
@@ -328,10 +342,10 @@ export const useWebSocket = ({ chatId, isGroup = false, userId, isGlobal = false
   }, [connect]);
 
   const clearNotifications = useCallback((chatId) => {
-    setNewMessageNotifications((prev) => {
-      const updated = prev.filter((notif) => notif.chatId !== chatId);
+    subscribeToStore((state) => {
+      state.newMessageNotifications = state.newMessageNotifications.filter((notif) => notif.chatId !== chatId);
       logger.info(`Cleared notifications for chat ${chatId}`);
-      return updated;
+      return state;
     });
   }, []);
 
@@ -349,7 +363,7 @@ export const useWebSocket = ({ chatId, isGroup = false, userId, isGlobal = false
 
   return {
     sendMessage,
-    isConnected,
+    isConnected: connectionStatus === ConnectionStatus.CONNECTED,
     typingUsers,
     onlineUsers,
     newMessageNotifications,

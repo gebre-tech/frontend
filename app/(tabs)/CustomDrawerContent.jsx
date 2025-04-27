@@ -14,7 +14,7 @@ import axios from 'axios';
 import { AuthContext } from '../../context/AuthContext';
 import { Dimensions } from 'react-native';
 import debounce from 'lodash/debounce';
-import { API_URL, API_HOST,PLACEHOLDER_IMAGE } from '../utils/constants';
+import { API_URL, API_HOST,PLACEHOLDER_IMAGE,DEFAULT_AVATAR_ICON} from '../utils/constants';
 
 
 const WS_URL = `ws://${API_HOST}/ws/profile/`;

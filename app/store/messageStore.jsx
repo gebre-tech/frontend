@@ -1,20 +1,26 @@
+
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { persist, devtools } from 'zustand/middleware';
+import { immer } from 'zustand/middleware/immer';
 
-// Logger utility with toggle
-const ENABLE_LOGS = false; // Toggle to false in production
+const ENABLE_LOGS = true; // Enable logs for debugging hydration issues
 const logger = {
   info: (...args) => ENABLE_LOGS && console.log('[MessageStore]', ...args),
   error: (...args) => console.error('[MessageStore]', ...args),
+  warn: (...args) => console.warn('[MessageStore]', ...args),
+};
+
+const initialState = {
+  messages: [], // Ensure messages is always an array
+  typingUsers: {}, // { [chatId]: string[] }
 };
 
 const useMessageStore = create(
   devtools(
     persist(
-      (set, get) => ({
-        messages: {}, // { [chatId]: { [messageId]: message } }
-        typingUsers: {}, // { [chatId]: string[] }
+      immer((set, get) => ({
+        ...initialState,
         addMessage: (chatId, message) => {
           if (!message.id && !message.tempId) {
             logger.error('Skipping message without ID:', message);
@@ -22,108 +28,121 @@ const useMessageStore = create(
           }
           const key = message.id || message.tempId;
           set((state) => {
-            const chatMessages = state.messages[chatId] || {};
-            if (chatMessages[key]) {
+            if (state.messages.some((m) => m.chatId === chatId && (m.id === key || m.tempId === key))) {
               logger.info(`Message ${key} already exists in chat ${chatId}, skipping`);
-              return state; // Prevent duplicates
+              return;
             }
-            const updatedChatMessages = { ...chatMessages, [key]: message };
+            state.messages.push({ chatId, messageId: key, ...message });
             logger.info(`Added message ${key} to chat ${chatId}`);
-            return { messages: { ...state.messages, [chatId]: updatedChatMessages } };
           });
         },
         updateMessage: (chatId, messageId, updates) => {
           set((state) => {
-            const chatMessages = state.messages[chatId] || {};
-            if (!chatMessages[messageId]) {
+            const index = state.messages.findIndex((m) => m.chatId === chatId && (m.id === messageId || m.tempId === messageId));
+            if (index === -1) {
               logger.error(`Message ${messageId} not found in chat ${chatId}`);
-              return state;
+              return;
             }
-            const updatedChatMessages = {
-              ...chatMessages,
-              [messageId]: { ...chatMessages[messageId], ...updates },
-            };
+            state.messages[index] = { ...state.messages[index], ...updates };
             logger.info(`Updated message ${messageId} in chat ${chatId}`);
-            return { messages: { ...state.messages, [chatId]: updatedChatMessages } };
           });
         },
         deleteMessage: (chatId, messageId) => {
           set((state) => {
-            const chatMessages = state.messages[chatId] || {};
-            if (!chatMessages[messageId]) {
+            const index = state.messages.findIndex((m) => m.chatId === chatId && (m.id === messageId || m.tempId === messageId));
+            if (index === -1) {
               logger.error(`Message ${messageId} not found in chat ${chatId}`);
-              return state;
+              return;
             }
-            const updatedChatMessages = { ...chatMessages };
-            delete updatedChatMessages[messageId];
+            state.messages.splice(index, 1);
             logger.info(`Deleted message ${messageId} from chat ${chatId}`);
-            return { messages: { ...state.messages, [chatId]: updatedChatMessages } };
           });
         },
         setMessages: (chatId, messages) => {
-          const normalizedMessages = messages.reduce((acc, msg) => {
-            const key = msg.id || msg.tempId;
-            if (key && !acc[key]) acc[key] = msg;
-            return acc;
-          }, {});
           set((state) => {
-            const existingMessages = state.messages[chatId] || {};
-            const hasChanged = Object.keys(normalizedMessages).length !== Object.keys(existingMessages).length ||
-              Object.keys(normalizedMessages).some(
-                (key) => JSON.stringify(normalizedMessages[key]) !== JSON.stringify(existingMessages[key])
-              );
-            if (!hasChanged) {
-              logger.info(`No changes in messages for chat ${chatId}, skipping update`);
-              return state; // Prevent unnecessary updates
-            }
-            logger.info(`Set ${Object.keys(normalizedMessages).length} messages for chat ${chatId}`);
-            return { messages: { ...state.messages, [chatId]: normalizedMessages } };
+            const safeMessages = Array.isArray(messages) ? messages : [];
+            const normalizedMessages = safeMessages.map((msg) => ({
+              chatId,
+              messageId: msg.id || msg.tempId,
+              ...msg,
+            }));
+            state.messages = [
+              ...state.messages.filter((m) => m.chatId !== chatId),
+              ...normalizedMessages,
+            ];
+            logger.info(`Set ${normalizedMessages.length} messages for chat ${chatId}`);
           });
         },
         addTypingUser: (chatId, username) => {
           set((state) => {
             const chatTypingUsers = state.typingUsers[chatId] || [];
-            if (chatTypingUsers.includes(username)) return state; // Prevent duplicates
-            const updatedTypingUsers = [...chatTypingUsers, username].slice(-3);
+            if (chatTypingUsers.includes(username)) return;
+            state.typingUsers[chatId] = [...chatTypingUsers, username].slice(-3);
             logger.info(`Added typing user ${username} to chat ${chatId}`);
-            return { typingUsers: { ...state.typingUsers, [chatId]: updatedTypingUsers } };
           });
         },
         removeTypingUser: (chatId, username) => {
           set((state) => {
             const chatTypingUsers = state.typingUsers[chatId] || [];
-            const updatedTypingUsers = chatTypingUsers.filter((u) => u !== username);
+            state.typingUsers[chatId] = chatTypingUsers.filter((u) => u !== username);
             logger.info(`Removed typing user ${username} from chat ${chatId}`);
-            return { typingUsers: { ...state.typingUsers, [chatId]: updatedTypingUsers } };
           });
         },
         clearMessages: (chatId) => {
           set((state) => {
-            const updatedMessages = { ...state.messages };
-            const updatedTypingUsers = { ...state.typingUsers };
-            delete updatedMessages[chatId];
-            delete updatedTypingUsers[chatId];
+            state.messages = state.messages.filter((m) => m.chatId !== chatId);
+            delete state.typingUsers[chatId];
             logger.info(`Cleared messages and typing users for chat ${chatId}`);
-            return { messages: updatedMessages, typingUsers: updatedTypingUsers };
           });
         },
         clearAll: () => {
-          set({ messages: {}, typingUsers: {} });
-          logger.info('Cleared all messages and typing users');
+          set((state) => {
+            state.messages = [];
+            state.typingUsers = {};
+            logger.info('Cleared all messages and typing users');
+          });
         },
-      }),
+      })),
       {
         name: 'message-store',
         storage: {
           getItem: async (name) => {
-            const value = await AsyncStorage.getItem(name);
-            return value ? JSON.parse(value) : null;
+            try {
+              const value = await AsyncStorage.getItem(name);
+              if (!value) {
+                logger.info(`No data found in AsyncStorage for ${name}`);
+                return initialState;
+              }
+              const parsed = JSON.parse(value);
+              // Validate that messages is an array
+              if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.messages)) {
+                logger.warn(`Invalid data in AsyncStorage for ${name}, resetting to initial state`);
+                await AsyncStorage.removeItem(name);
+                return initialState;
+              }
+              logger.info(`Successfully hydrated store from AsyncStorage for ${name}`);
+              return parsed;
+            } catch (error) {
+              logger.error(`Failed to parse AsyncStorage data for ${name}:`, error);
+              await AsyncStorage.removeItem(name);
+              return initialState;
+            }
           },
           setItem: async (name, value) => {
-            await AsyncStorage.setItem(name, JSON.stringify(value));
+            try {
+              await AsyncStorage.setItem(name, JSON.stringify(value));
+              logger.info(`Saved state to AsyncStorage for ${name}`);
+            } catch (error) {
+              logger.error(`Failed to save state to AsyncStorage for ${name}:`, error);
+            }
           },
           removeItem: async (name) => {
-            await AsyncStorage.removeItem(name);
+            try {
+              await AsyncStorage.removeItem(name);
+              logger.info(`Removed AsyncStorage data for ${name}`);
+            } catch (error) {
+              logger.error(`Failed to remove AsyncStorage data for ${name}:`, error);
+            }
           },
         },
       }

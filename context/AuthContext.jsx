@@ -2,13 +2,13 @@
 import React, { createContext, useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
-import { API_URL} from "../app/utils/constants";
-
+import { API_URL } from "../app/utils/constants";
 
 const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
+  const [keys, setKeys] = useState({ publicKey: '', privateKey: '' });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -28,9 +28,21 @@ export const AuthProvider = ({ children }) => {
         headers: { Authorization: `Bearer ${token}` },
       });
       setUser(res.data);
+
+      const email = res.data.email;
+      const [privateKey, publicKey] = await Promise.all([
+        AsyncStorage.getItem(`private_key_${email}`),
+        AsyncStorage.getItem(`public_key_${email}`),
+      ]);
+      if (privateKey && publicKey) {
+        setKeys({ publicKey, privateKey });
+      } else {
+        setError("Keys not found on this device. You may need to transfer your private key.");
+      }
     } catch (error) {
       console.log("Auth check failed:", error);
       setUser(null);
+      setKeys({ publicKey: '', privateKey: '' });
     } finally {
       setLoading(false);
     }
@@ -44,6 +56,22 @@ export const AuthProvider = ({ children }) => {
       await AsyncStorage.setItem("token", res.data.access);
       await AsyncStorage.setItem("refresh", res.data.refresh);
       setUser(res.data.user);
+
+      const [privateKey, publicKey] = await Promise.all([
+        AsyncStorage.getItem(`private_key_${email}`),
+        AsyncStorage.getItem(`public_key_${email}`),
+      ]);
+      console.log('Retrieved Private Key:', privateKey);
+      console.log('Retrieved Public Key:', publicKey);
+
+      if (privateKey && publicKey) {
+        setKeys({ publicKey, privateKey });
+        console.log('succefully set Private Key:', privateKey);
+        console.log('succefully set Public Key:', publicKey);
+      } else {
+        setError("Keys not found on this device. You may need to transfer your private key.");
+      }
+
       return true;
     } catch (error) {
       setError(error.response?.data?.detail || "Invalid credentials");
@@ -58,7 +86,6 @@ export const AuthProvider = ({ children }) => {
     try {
       const token = await AsyncStorage.getItem("token");
       if (token) {
-        // Attempt to notify server of logout
         try {
           await axios.post(
             `${API_URL}/auth/logout/`,
@@ -70,16 +97,22 @@ export const AuthProvider = ({ children }) => {
         }
       }
 
-      // Clear all stored data
-      await AsyncStorage.multiRemove(["token", "refresh", "username", "email", "profileImage"]);
+      const email = user?.email;
+      await AsyncStorage.multiRemove([
+        "token",
+        "refresh",
+        "username",
+        "email",
+        "profileImage",
+      ]);
       setUser(null);
-      
-      // Reset navigation stack to login screen
+      setKeys({ publicKey: '', privateKey: '' });
+
       navigation.reset({
         index: 0,
         routes: [{ name: "Login" }],
       });
-      
+
       return true;
     } catch (error) {
       console.log("Logout error:", error);
@@ -91,7 +124,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, loading, error }}>
+    <AuthContext.Provider value={{ user, keys, login, logout, loading, error }}>
       {children}
     </AuthContext.Provider>
   );

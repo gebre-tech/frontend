@@ -2,7 +2,16 @@
 import React, { useState } from "react";
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from "react-native";
 import axios from "axios";
-import { API_URL } from "../utils/constants"; // Adjust the import path as necessary
+import { API_URL } from "../utils/constants";
+import { Buffer } from 'buffer';
+import { x25519 } from '@noble/curves/ed25519';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+async function generateKeyPair() {
+  const privateKey = Buffer.from(x25519.utils.randomPrivateKey());
+  const publicKey = Buffer.from(x25519.getPublicKey(privateKey));
+  return { privateKey, publicKey };
+}
 
 const Signup = ({ navigation }) => {
   const [email, setEmail] = useState("");
@@ -15,7 +24,6 @@ const Signup = ({ navigation }) => {
   const [error, setError] = useState("");
 
   const handleSignup = async () => {
-    // Frontend validation
     if (!email || !username || !firstName || !lastName || !password || !confirmPassword) {
       Alert.alert("Error", "Please fill in all required fields.");
       return;
@@ -29,6 +37,25 @@ const Signup = ({ navigation }) => {
     setError("");
 
     try {
+      const { privateKey, publicKey } = await generateKeyPair();
+      const publicKeyHex = publicKey.toString('hex');
+      const privateKeyHex = privateKey.toString('hex');
+
+      await Promise.all([
+        AsyncStorage.setItem(`private_key_${email}`, privateKeyHex),
+        AsyncStorage.setItem(`public_key_${email}`, publicKeyHex)
+      ]);
+      
+      // Verify storage by retrieving keys
+      const [storedPrivateKey, storedPublicKey] = await Promise.all([
+        AsyncStorage.getItem(`private_key_${email}`),
+        AsyncStorage.getItem(`public_key_${email}`),
+      ]);
+
+      console.log('Stored Private Key:', storedPrivateKey);
+      console.log('Stored Public Key:', storedPublicKey);
+      console.log('Keys Match:', storedPrivateKey === privateKeyHex && storedPublicKey === publicKeyHex);
+
       const response = await axios.post(`${API_URL}/auth/register/`, {
         username,
         email,
@@ -36,6 +63,7 @@ const Signup = ({ navigation }) => {
         last_name: lastName,
         password,
         password2: confirmPassword,
+        public_key: publicKeyHex,
       });
 
       if (response.status === 201) {
@@ -44,16 +72,17 @@ const Signup = ({ navigation }) => {
       }
     } catch (error) {
       console.log("Signup error:", error);
-      // Handle backend validation errors
+      await Promise.all([
+        AsyncStorage.removeItem(`private_key_${email}`),
+        AsyncStorage.removeItem(`public_key_${email}`),
+      ]);
       if (error.response?.data) {
         const errorData = error.response.data;
         if (typeof errorData === "object") {
-          // Handle field-specific errors
           const errorMessages = Object.values(errorData).flat().join("\n");
           setError(errorMessages);
           Alert.alert("Signup Failed", errorMessages);
         } else if (errorData.detail) {
-          // Handle generic error messages
           setError(errorData.detail);
           Alert.alert("Signup Failed", errorData.detail);
         }

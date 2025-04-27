@@ -17,7 +17,7 @@ import { AuthContext } from "../../context/AuthContext";
 import { Ionicons } from "@expo/vector-icons";
 import debounce from "lodash/debounce";
 import tw from "twrnc";
-import { API_URL, API_HOST,PLACEHOLDER_IMAGE } from '../utils/constants';
+import { API_URL, API_HOST, PLACEHOLDER_IMAGE } from '../utils/constants';
 
 const Contacts = () => {
   const [contacts, setContacts] = useState([]);
@@ -68,28 +68,25 @@ const Contacts = () => {
     try {
       const token = await AsyncStorage.getItem("token");
       if (!token) throw new Error("No authentication token found");
-  
-      // Check if a chat room already exists
+
       const response = await axios.get(`${API_URL}/chat/rooms/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-  
+
       const existingChat = response.data.find(
         (chat) =>
           !chat.is_group &&
           chat.members.some((member) => member.id === friendId) &&
           chat.members.some((member) => member.id === user.id)
       );
-  
+
       let chatId = existingChat?.id;
-  
+
       if (!chatId) {
-        // If no chat exists, we'll let the backend create it when the first message is sent
-        // Navigate to ChatScreen with friend details, and let SendMessageView handle creation
         console.log(`No existing chat found, navigating to ChatScreen for ${friendUsername}`);
         navigation.navigate("ChatScreen", {
-          chatId: null, // Pass null to indicate no existing chat
-          friendId,     // Pass friendId to use in ChatScreen
+          chatId: null,
+          friendId,
           friendUsername,
           isGroup: false,
         });
@@ -143,7 +140,7 @@ const Contacts = () => {
   };
 
   const setupWebSocket = useCallback(async () => {
-    const token = await AsyncStorage.getItem("token");
+    const token = await AsyncStorage.getItem('token');
     if (!token) return;
 
     const wsInstance = new WebSocket(`ws://${API_HOST}/ws/contacts/?token=${token}`);
@@ -217,7 +214,6 @@ const Contacts = () => {
           <Image
             source={{
               uri: item.friend.profile_picture || PLACEHOLDER_IMAGE,
-              // Fallback to placeholder image if no profile picture is available 
             }}
             style={tw`w-12 h-12 rounded-full mr-3`}
           />

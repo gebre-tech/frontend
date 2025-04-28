@@ -1,5 +1,5 @@
 // app/tabs/Contacts.jsx
-import React, { useState, useEffect, useContext, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,29 +9,30 @@ import {
   TextInput,
   Alert,
   Image,
-} from "react-native";
-import axios from "axios";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useNavigation, useFocusEffect } from "@react-navigation/native";
-import { AuthContext } from "../../context/AuthContext";
-import { Ionicons } from "@expo/vector-icons";
-import debounce from "lodash/debounce";
-import tw from "twrnc";
+} from 'react-native';
+import axios from 'axios';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
+import debounce from 'lodash/debounce';
+import tw from 'twrnc';
+import { AuthContext } from '../../context/AuthContext';
 import { API_URL, API_HOST, PLACEHOLDER_IMAGE } from '../utils/constants';
 
 const Contacts = () => {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [searchText, setSearchText] = useState("");
+  const [searchText, setSearchText] = useState('');
   const navigation = useNavigation();
-  const { user } = useContext(AuthContext);
+  const { user, logout } = React.useContext(AuthContext);
   const [ws, setWs] = useState(null);
 
   const fetchContacts = useCallback(async () => {
+    if (!user) return;
     try {
       setLoading(true);
-      const token = await AsyncStorage.getItem("token");
-      if (!token) throw new Error("No authentication token found");
+      const token = await AsyncStorage.getItem('token');
+      if (!token) throw new Error('No authentication token found');
       const response = await axios.get(`${API_URL}/contacts/list_with_profiles/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -41,15 +42,15 @@ const Contacts = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user]);
 
   const searchContacts = useCallback(
     debounce(async (query) => {
       if (!query) return fetchContacts();
       try {
         setLoading(true);
-        const token = await AsyncStorage.getItem("token");
-        if (!token) throw new Error("No authentication token found");
+        const token = await AsyncStorage.getItem('token');
+        if (!token) throw new Error('No authentication token found');
         const response = await axios.get(`${API_URL}/contacts/search/`, {
           headers: { Authorization: `Bearer ${token}` },
           params: { query },
@@ -64,64 +65,48 @@ const Contacts = () => {
     [fetchContacts]
   );
 
-  const startChat = async (friendId, friendUsername) => {
-    try {
-      const token = await AsyncStorage.getItem("token");
-      if (!token) throw new Error("No authentication token found");
-
-      const response = await axios.get(`${API_URL}/chat/rooms/`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      const existingChat = response.data.find(
-        (chat) =>
-          !chat.is_group &&
-          chat.members.some((member) => member.id === friendId) &&
-          chat.members.some((member) => member.id === user.id)
-      );
-
-      let chatId = existingChat?.id;
-
-      if (!chatId) {
-        console.log(`No existing chat found, navigating to ChatScreen for ${friendUsername}`);
-        navigation.navigate("ChatScreen", {
-          chatId: null,
-          friendId,
-          friendUsername,
-          isGroup: false,
-        });
-      } else {
-        console.log(`Navigating to ChatScreen with chatId=${chatId}, friendUsername=${friendUsername}`);
-        navigation.navigate("ChatScreen", {
-          chatId,
-          friendUsername,
-          isGroup: false,
-        });
+  const startChat = useCallback(
+    async (friendId, friendUsername) => {
+      if (!user) {
+        Alert.alert('Error', 'You must be logged in to start a chat.');
+        navigation.navigate('Login');
+        return;
       }
-    } catch (error) {
-      console.error("Start chat error:", {
-        message: error.message,
-        status: error.response?.status,
-        data: error.response?.data,
-        headers: error.response?.headers,
-      });
-      Alert.alert("Error", error.response?.data?.error || error.message || "Failed to start chat");
-    }
-  };
+      try {
+        const token = await AsyncStorage.getItem('token');
+        if (!token) throw new Error('No authentication token found');
+
+        // Navigate to ChatScreen with required parameters
+        navigation.navigate('ChatScreen', {
+          senderId: user.id,
+          contactId: friendId,
+          contactUsername: friendUsername,
+        });
+      } catch (error) {
+        console.error('Start chat error:', {
+          message: error.message,
+          status: error.response?.status,
+          data: error.response?.data,
+        });
+        Alert.alert('Error', error.response?.data?.error || error.message || 'Failed to start chat');
+      }
+    },
+    [user, navigation]
+  );
 
   const removeFriend = async (friendId) => {
     try {
-      const token = await AsyncStorage.getItem("token");
-      if (!token) throw new Error("No authentication token found");
+      const token = await AsyncStorage.getItem('token');
+      if (!token) throw new Error('No authentication token found');
       await axios.delete(`${API_URL}/contacts/remove/${friendId}/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       setContacts((prev) => prev.filter((contact) => contact.friend_id !== friendId));
-      Alert.alert("Success", "Friend removed successfully");
+      Alert.alert('Success', 'Friend removed successfully');
     } catch (error) {
       if (error.response?.status === 404) {
         setContacts((prev) => prev.filter((contact) => contact.friend_id !== friendId));
-        Alert.alert("Info", "Friend was already removed");
+        Alert.alert('Info', 'Friend was already removed');
       } else {
         handleError(error);
       }
@@ -129,13 +114,19 @@ const Contacts = () => {
   };
 
   const handleError = (error) => {
-    console.error("Error:", error);
+    console.error('Error:', error);
     if (error.response?.status === 401) {
-      Alert.alert("Error", "Session expired. Please log in again.", [
-        { text: "OK", onPress: () => navigation.navigate("Login") },
+      Alert.alert('Error', 'Session expired. Please log in again.', [
+        {
+          text: 'OK',
+          onPress: async () => {
+            await logout(navigation);
+            navigation.navigate('Login');
+          },
+        },
       ]);
     } else {
-      Alert.alert("Error", error.response?.data?.error || error.message || "An error occurred");
+      Alert.alert('Error', error.response?.data?.error || error.message || 'An error occurred');
     }
   };
 
@@ -144,30 +135,30 @@ const Contacts = () => {
     if (!token) return;
 
     const wsInstance = new WebSocket(`ws://${API_HOST}/ws/contacts/?token=${token}`);
-    wsInstance.onopen = () => console.log("Contacts WebSocket connected");
+    wsInstance.onopen = () => console.log('Contacts WebSocket connected');
     wsInstance.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
-        console.log("Contacts WebSocket message:", data);
-        if (data.type === "friend_removed") {
+        console.log('Contacts WebSocket message:', data);
+        if (data.type === 'friend_removed') {
           setContacts((prev) => prev.filter((contact) => contact.friend_id !== data.friend_id));
-          Alert.alert("Notification", `${data.friend_first_name} removed you as a friend`);
-        } else if (data.type === "friend_request_accepted") {
+          Alert.alert('Notification', `${data.friend_first_name} removed you as a friend`);
+        } else if (data.type === 'friend_request_accepted') {
           setContacts((prev) => [...prev, data.contact]);
           Alert.alert(
-            "Notification",
+            'Notification',
             `${data.contact.friend.user.username} accepted your friend request`
           );
         }
       } catch (error) {
-        console.error("WebSocket message parsing error:", error);
+        console.error('WebSocket message parsing error:', error);
       }
     };
     wsInstance.onerror = (error) => {
-      console.error("WebSocket error:", error);
+      console.error('WebSocket error:', error);
       setTimeout(setupWebSocket, 2000);
     };
-    wsInstance.onclose = () => console.log("Contacts WebSocket closed");
+    wsInstance.onclose = () => console.log('Contacts WebSocket closed');
     setWs(wsInstance);
 
     return () => {
@@ -183,14 +174,14 @@ const Contacts = () => {
     return () => {
       if (ws) {
         ws.close();
-        console.log("Contacts WebSocket cleanup");
+        console.log('Contacts WebSocket cleanup');
       }
     };
   }, [user, fetchContacts, setupWebSocket]);
 
   useFocusEffect(
     useCallback(() => {
-      const currentRoute = navigation.getState()?.routes.find((r) => r.name === "Contacts");
+      const currentRoute = navigation.getState()?.routes.find((r) => r.name === 'Contacts');
       if (currentRoute?.params?.refresh) {
         fetchContacts();
         navigation.setParams({ refresh: false });
@@ -203,7 +194,9 @@ const Contacts = () => {
   }, [searchText, searchContacts]);
 
   const renderItem = ({ item }) => {
-    const isOnline = item.is_online || (item.friend.last_seen && new Date() - new Date(item.friend.last_seen) < 5 * 60 * 1000);
+    const isOnline =
+      item.is_online ||
+      (item.friend.last_seen && new Date() - new Date(item.friend.last_seen) < 5 * 60 * 1000);
 
     return (
       <TouchableOpacity
@@ -227,13 +220,13 @@ const Contacts = () => {
           <Text style={tw`text-lg font-semibold text-gray-800`}>
             {item.friend.user.first_name || item.friend.user.username}
           </Text>
-          <Text style={tw`text-xs mt-1 ${isOnline ? "text-green-500" : "text-gray-500"}`}>
+          <Text style={tw`text-xs mt-1 ${isOnline ? 'text-green-500' : 'text-gray-500'}`}>
             {isOnline
-              ? "Online"
+              ? 'Online'
               : `Last seen: ${
                   item.friend.last_seen
                     ? new Date(item.friend.last_seen).toLocaleString()
-                    : "Unknown"
+                    : 'Unknown'
                 }`}
           </Text>
         </View>
@@ -243,6 +236,20 @@ const Contacts = () => {
       </TouchableOpacity>
     );
   };
+
+  if (!user) {
+    return (
+      <View style={tw`flex-1 justify-center items-center bg-gray-100`}>
+        <Text style={tw`text-lg text-gray-600 mb-4`}>Please log in to view contacts.</Text>
+        <TouchableOpacity
+          style={tw`bg-blue-500 px-6 py-2 rounded-full`}
+          onPress={() => navigation.navigate('Login')}
+        >
+          <Text style={tw`text-white font-semibold`}>Go to Login</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <View style={tw`flex-1 bg-gray-100`}>
@@ -265,7 +272,7 @@ const Contacts = () => {
           keyExtractor={(item) => item.friend_id.toString()}
           ListEmptyComponent={
             <Text style={tw`text-center mt-5 text-gray-500`}>
-              {searchText ? "No contacts found" : "No contacts available"}
+              {searchText ? 'No contacts found' : 'No contacts available'}
             </Text>
           }
           contentContainerStyle={tw`pb-4`}

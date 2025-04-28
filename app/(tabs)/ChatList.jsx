@@ -42,7 +42,16 @@ const ChatList = () => {
     subscribeToEvent,
     isConnected,
     retryConnection,
+    sendTypingStatus,
   } = useWebSocket({ userId: user?.id, isGlobal: true });
+
+  const generateChatId = useCallback((senderId, receiverId) => {
+    if (!senderId || !receiverId) {
+      console.warn('Invalid senderId or receiverId:', { senderId, receiverId });
+      return null;
+    }
+    return `chat_${Math.min(senderId, receiverId)}_${Math.max(senderId, receiverId)}`;
+  }, []);
 
   const fetchChats = useCallback(async () => {
     try {
@@ -61,8 +70,8 @@ const ChatList = () => {
       const enhancedChats = await Promise.all(
         (response.data || []).map(async (chat) => {
           const updatedMembers = await Promise.all(
-            chat.members.map(async (member) => {
-              if (!member.profile_picture) {
+            (chat.members || []).map(async (member) => {
+              if (!member?.profile_picture) {
                 try {
                   const profileResponse = await axios.get(
                     `${API_URL}/profiles/friend/${member.username}/`,
@@ -78,26 +87,35 @@ const ChatList = () => {
             })
           );
 
-          const chatMessages = messageStore.messages[chat.id] || {};
+          const chatId = chat.is_group
+            ? chat.id
+            : generateChatId(user.id, chat.members?.find((m) => m.id !== user.id)?.id);
+
+          if (!chatId) {
+            console.warn('Skipping chat with invalid chatId:', chat);
+            return null;
+          }
+
+          const chatMessages = messageStore.messages[chatId] || {};
           const messages = Object.values(chatMessages);
           if (messages.length > 0) {
             return {
               ...chat,
+              chatId,
               members: updatedMembers,
               last_message: messages[messages.length - 1],
               unread_count: messages.filter(
-                (m) => !m.seen_by?.some((u) => u.id === user.id) && m.sender.id !== user.id
+                (m) => m.status !== 'seen' && m.sender !== user.id
               ).length,
-              delivered_count: messages.filter(
-                (m) => m.delivered_to?.length > 0 && !m.seen_by?.length
-              ).length,
+              delivered_count: messages.filter((m) => m.status === 'delivered').length,
             };
           }
-          return { ...chat, members: updatedMembers };
+          return { ...chat, chatId, members: updatedMembers };
         })
       );
 
-      const sortedChats = enhancedChats.sort(
+      const validChats = enhancedChats.filter((chat) => chat !== null);
+      const sortedChats = validChats.sort(
         (a, b) =>
           new Date(b.last_message?.timestamp || b.created_at) -
           new Date(a.last_message?.timestamp || a.created_at)
@@ -113,7 +131,7 @@ const ChatList = () => {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [fadeAnim, user?.id, messageStore.messages]);
+  }, [fadeAnim, user?.id, messageStore.messages, generateChatId]);
 
   useEffect(() => {
     if (user) {
@@ -122,20 +140,30 @@ const ChatList = () => {
   }, [user, fetchChats]);
 
   useEffect(() => {
-    const handleNewMessage = (message) => {
-      const chatId = message.chat.id;
-      messageStore.addMessage(chatId, message);
+    const handleNewMessage = (data) => {
+      const { chatId, message } = data;
+      if (!chatId) {
+        console.warn('Received message with invalid chatId:', data);
+        return;
+      }
+
+      messageStore.addMessage(chatId, {
+        ...message,
+        status: message.sender === user.id ? 'sent' : 'delivered',
+      });
 
       setChats((prev) => {
-        let updatedChats = prev.filter((chat) => chat.id !== chatId);
-        const existingChat = prev.find((chat) => chat.id === chatId);
+        let updatedChats = prev.filter((chat) => chat.chatId !== chatId);
+        const existingChat = prev.find((chat) => chat.chatId === chatId);
+        const friend = message.chat?.members?.find((m) => m.id !== user.id);
         const newChat = {
           id: chatId,
-          members: message.chat.members,
+          chatId,
+          members: message.chat?.members || [],
           last_message: message,
-          unread_count: message.sender.id !== user.id ? (existingChat?.unread_count || 0) + 1 : 0,
+          unread_count: message.sender !== user.id ? (existingChat?.unread_count || 0) + 1 : 0,
           delivered_count: message.delivered_to?.length > 0 ? 1 : 0,
-          is_group: message.chat.is_group || false,
+          is_group: message.chat?.is_group || false,
           created_at: new Date().toISOString(),
         };
         updatedChats = [newChat, ...updatedChats]
@@ -157,31 +185,25 @@ const ChatList = () => {
       ]).start();
     };
 
-    const handleMessageDelivered = (data) => {
-      const { chat_id, message_id } = data;
-      messageStore.updateMessage(chat_id, message_id, {
-        delivered_to: [...(messageStore.messages[chat_id]?.[message_id]?.delivered_to || []), { id: user.id }],
-      });
+    const handleMessageDelivered = ({ chatId, messageId }) => {
+      if (!chatId) return;
+      messageStore.updateMessage(chatId, messageId, { status: 'delivered' });
 
       setChats((prev) => {
-        let updatedChats = prev.filter((chat) => chat.id !== chat_id);
-        const chatToUpdate = prev.find((chat) => chat.id === chat_id) || {
-          id: chat_id,
+        let updatedChats = prev.filter((chat) => chat.chatId !== chatId);
+        const chatToUpdate = prev.find((chat) => chat.chatId === chatId) || {
+          chatId,
           members: [],
           is_group: false,
           created_at: new Date().toISOString(),
         };
-        const chatMessages = messageStore.messages[chat_id] || {};
+        const chatMessages = messageStore.messages[chatId] || {};
         const messages = Object.values(chatMessages);
         const updatedChat = {
           ...chatToUpdate,
           last_message: messages[messages.length - 1],
-          delivered_count: messages.filter(
-            (m) => m.delivered_to?.length > 0 && !m.seen_by?.length
-          ).length,
-          unread_count: messages.filter(
-            (m) => !m.seen_by?.some((u) => u.id === user.id) && m.sender.id !== user.id
-          ).length,
+          delivered_count: messages.filter((m) => m.status === 'delivered').length,
+          unread_count: messages.filter((m) => m.status !== 'seen' && m.sender !== user.id).length,
         };
         updatedChats = [updatedChat, ...updatedChats]
           .sort(
@@ -195,16 +217,62 @@ const ChatList = () => {
         return updatedChats;
       });
 
-      setHighlightedChatIds((prev) => new Set(prev).add(chat_id));
+      setHighlightedChatIds((prev) => new Set(prev).add(chatId));
+    };
+
+    const handleMessageSeen = ({ chatId, messageId }) => {
+      if (!chatId) return;
+      messageStore.updateMessage(chatId, messageId, { status: 'seen' });
+
+      setChats((prev) => {
+        let updatedChats = prev.filter((chat) => chat.chatId !== chatId);
+        const chatToUpdate = prev.find((chat) => chat.chatId === chatId);
+        if (!chatToUpdate) return prev;
+        const chatMessages = messageStore.messages[chatId] || {};
+        const messages = Object.values(chatMessages);
+        const updatedChat = {
+          ...chatToUpdate,
+          last_message: messages[messages.length - 1],
+          delivered_count: messages.filter((m) => m.status === 'delivered').length,
+          unread_count: messages.filter((m) => m.status !== 'seen' && m.sender !== user.id).length,
+        };
+        updatedChats = [updatedChat, ...updatedChats]
+          .sort(
+            (a, b) =>
+              new Date(b.last_message?.timestamp || b.created_at) -
+              new Date(a.last_message?.timestamp || a.created_at)
+          )
+          .slice(0, INITIAL_CHAT_LIMIT);
+
+        AsyncStorage.setItem('cached-chats', JSON.stringify(updatedChats));
+        return updatedChats;
+      });
+    };
+
+    const handleTyping = ({ chatId, username, isTyping }) => {
+      if (isTyping) {
+        messageStore.addTypingUser(chatId, username);
+      } else {
+        messageStore.removeTypingUser(chatId, username);
+      }
     };
 
     const unsubscribers = [
       subscribeToEvent('message', handleNewMessage),
       subscribeToEvent('message_delivered', handleMessageDelivered),
+      subscribeToEvent('message_seen', handleMessageSeen),
+      subscribeToEvent('typing', handleTyping),
     ];
 
     return () => unsubscribers.forEach((unsub) => unsub());
-  }, [subscribeToEvent, user?.id, fadeAnim, messageStore]);
+  }, [
+    subscribeToEvent,
+    user?.id,
+    fadeAnim,
+    messageStore,
+    clearNotifications,
+    generateChatId,
+  ]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -224,9 +292,12 @@ const ChatList = () => {
       await axios.delete(`${API_URL}/chat/rooms/${chatId}/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setChats((prev) => prev.filter((chat) => chat.id !== chatId));
+      setChats((prev) => prev.filter((chat) => chat.chatId !== chatId));
       messageStore.clearMessages(chatId);
-      await AsyncStorage.setItem('cached-chats', JSON.stringify(chats.filter((chat) => chat.id !== chatId)));
+      await AsyncStorage.setItem(
+        'cached-chats',
+        JSON.stringify(chats.filter((chat) => chat.chatId !== chatId))
+      );
       Alert.alert('Success', 'Chat deleted successfully');
     } catch (error) {
       console.error('Error deleting chat:', error);
@@ -251,11 +322,37 @@ const ChatList = () => {
   const renderItem = ({ item }) => {
     const friend = item.members.find((m) => m.id !== user.id);
     const isOnline = onlineUsers.has(friend?.id);
-    const isHighlighted = highlightedChatIds.has(item.id);
-    const isSentMessage = item.last_message && item.last_message.sender.id === user.id;
+    const isHighlighted = highlightedChatIds.has(item.chatId);
+    const isSentMessage = item.last_message && item.last_message.sender === user.id;
+    const typingUsers = messageStore.typingUsers[item.chatId] || [];
+
+    let lastMessageText = '';
+    if (typingUsers.length > 0) {
+      lastMessageText = `${typingUsers.join(', ')} ${typingUsers.length > 1 ? 'are' : 'is'} typing...`;
+    } else if (item.last_message) {
+      if (item.last_message.type === 'text') {
+        if (isSentMessage) {
+          lastMessageText = `You: ${truncateMessage(item.last_message.message)}`;
+        } else if (item.is_group) {
+          lastMessageText = `${
+            item.last_message.sender?.first_name || item.last_message.sender?.username
+          }: ${truncateMessage(item.last_message.message)}`;
+        } else {
+          lastMessageText = truncateMessage(item.last_message.message);
+        }
+      } else if (item.last_message.type === 'photo') {
+        lastMessageText = isSentMessage ? 'You sent a photo' : `${friend?.first_name || friend?.username} sent a photo`;
+      } else if (item.last_message.type === 'video') {
+        lastMessageText = isSentMessage ? 'You sent a video' : `${friend?.first_name || friend?.username} sent a video`;
+      } else if (item.last_message.type === 'file') {
+        lastMessageText = isSentMessage ? 'You sent a file' : `${friend?.first_name || friend?.username} sent a file`;
+      }
+    } else {
+      lastMessageText = 'No messages yet';
+    }
 
     return (
-      <Swipeable renderRightActions={() => renderRightActions(item.id)}>
+      <Swipeable renderRightActions={() => renderRightActions(item.chatId)}>
         <Animated.View style={{ opacity: fadeAnim }}>
           <View
             style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-sm border-b border-gray-100 ${
@@ -299,31 +396,37 @@ const ChatList = () => {
                       {},
                       { headers: { Authorization: `Bearer ${token}` } }
                     );
+                    const chatMessages = messageStore.messages[item.chatId] || {};
+                    Object.keys(chatMessages).forEach((messageId) => {
+                      if (chatMessages[messageId].status !== 'seen') {
+                        messageStore.updateMessage(item.chatId, messageId, { status: 'seen' });
+                      }
+                    });
                     setChats((prev) =>
                       prev.map((chat) =>
-                        chat.id === item.id ? { ...chat, unread_count: 0 } : chat
+                        chat.chatId === item.chatId ? { ...chat, unread_count: 0 } : chat
                       )
                     );
                     setHighlightedChatIds((prev) => {
                       const newSet = new Set(prev);
-                      newSet.delete(item.id);
+                      newSet.delete(item.chatId);
                       return newSet;
                     });
-                    clearNotifications(item.id);
+                    clearNotifications(item.chatId);
                   } catch (error) {
                     console.error('Error marking as read:', error);
                   }
                 }
 
                 navigation.navigate('ChatScreen', {
-                  chatId: item.id,
-                  friendUsername: item.is_group ? null : friend?.username,
-                  isGroup: item.is_group || false,
+                  senderId: user.id,
+                  contactId: friend?.id,
+                  contactUsername: friend?.username,
                 });
               }}
               onLongPress={() => {
                 Alert.alert('Chat Options', '', [
-                  { text: 'Delete Chat', style: 'destructive', onPress: () => deleteChat(item.id) },
+                  { text: 'Delete Chat', style: 'destructive', onPress: () => deleteChat(item.chatId) },
                   { text: 'Cancel', style: 'cancel' },
                 ]);
               }}
@@ -351,21 +454,22 @@ const ChatList = () => {
                   numberOfLines={2}
                   ellipsizeMode="tail"
                 >
-                  {item.last_message
-                    ? isSentMessage
-                      ? `You: ${truncateMessage(item.last_message.content) || item.last_message.message_type}`
-                      : item.is_group
-                      ? `${
-                          item.last_message.sender.first_name || item.last_message.sender.username
-                        }: ${truncateMessage(item.last_message.content) || item.last_message.message_type}`
-                      : `${truncateMessage(item.last_message.content) || item.last_message.message_type}`
-                    : 'No messages yet'}
+                  {lastMessageText}
                 </Text>
                 {!item.is_group && (
                   <Text
                     style={tw`text-xs mt-1 ${isOnline ? 'text-green-500' : 'text-gray-500'}`}
                   >
                     {isOnline ? 'Online' : 'Offline'}
+                  </Text>
+                )}
+                {isSentMessage && item.last_message && (
+                  <Text style={tw`text-xs text-gray-500 mt-1`}>
+                    {item.last_message.status === 'seen'
+                      ? '✓✓ Seen'
+                      : item.last_message.status === 'delivered'
+                      ? '✓✓ Delivered'
+                      : '✓ Sent'}
                   </Text>
                 )}
               </View>
@@ -399,7 +503,7 @@ const ChatList = () => {
       <FlatList
         data={chats}
         renderItem={renderItem}
-        keyExtractor={(chat) => chat.id.toString()}
+        keyExtractor={(chat, index) => chat.chatId?.toString() ?? `fallback-${index}`}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         ListEmptyComponent={
           <Text style={tw`text-center mt-5 text-gray-500`}>No chats available</Text>

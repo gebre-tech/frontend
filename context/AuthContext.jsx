@@ -36,6 +36,9 @@ export const AuthProvider = ({ children }) => {
       ]);
       if (privateKey && publicKey) {
         setKeys({ publicKey, privateKey });
+        console.log('succefully get and set Private Key:', privateKey);
+        console.log('succefully get and set Public Key:', publicKey);
+
       } else {
         setError("Keys not found on this device. You may need to transfer your private key.");
       }
@@ -54,7 +57,9 @@ export const AuthProvider = ({ children }) => {
     try {
       const res = await axios.post(`${API_URL}/auth/login/`, { email, password });
       await AsyncStorage.setItem("token", res.data.access);
-      await AsyncStorage.setItem("refresh", res.data.refresh);
+      // Store user_email and user_id
+      await AsyncStorage.setItem("user_email", res.data.user.email);
+      await AsyncStorage.setItem("user_id", res.data.user.id.toString()); // Ensure ID is stored as a string
       setUser(res.data.user);
 
       const [privateKey, publicKey] = await Promise.all([
@@ -104,6 +109,8 @@ export const AuthProvider = ({ children }) => {
         "username",
         "email",
         "profileImage",
+        "user_email", // Add user_email
+        "user_id",
       ]);
       setUser(null);
       setKeys({ publicKey: '', privateKey: '' });

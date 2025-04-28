@@ -2,11 +2,10 @@ import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import 'react-native-get-random-values';
 import {
   View, FlatList, TextInput, Text, TouchableOpacity,
-  TouchableWithoutFeedback, Keyboard, Image, Modal, Dimensions, StyleSheet
+  TouchableWithoutFeedback, Keyboard, Image, Modal, Dimensions, StyleSheet, Alert
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
-import { useLocalSearchParams } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
 import { Video } from 'expo-av';
@@ -16,6 +15,8 @@ import * as Crypto from 'expo-crypto';
 import { Buffer } from 'buffer';
 import aesjs from 'aes-js';
 import { x25519 } from '@noble/curves/ed25519';
+import axios from 'axios';
+import { API_HOST, API_URL, PLACEHOLDER_IMAGE_ICON, DEFAULT_AVATAR_ICON, REACTION_EMOJIS } from '../utils/constants';
 
 if (!global.crypto || !global.crypto.getRandomValues) {
   console.error("(NOBRIDGE) ERROR crypto.getRandomValues is not defined in chatroom.tsx");
@@ -29,20 +30,51 @@ const checkAESSupport = () => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
+  container: { flex: 1, backgroundColor: '#F8FAFC' }, // Updated to a professional off-white
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
     padding: 15,
-    backgroundColor: '#000',
+    backgroundColor: 'transparent',
+    backgroundImage: 'linear-gradient(to right, #1E90FF, #8A2BE2)',
+  },
+  backButton: {
+    marginRight: 10,
+  },
+  headerProfileContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  profileImageContainer: {
+    position: 'relative',
+    marginRight: 10,
+  },
+  headerProfileImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#e0e0e0',
+  },
+  onlineStatusRing: {
+    position: 'absolute',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 2,
+    borderColor: '#4CAF50',
+    top: -4,
+    left: -4,
+  },
+  headerTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: 'bold',
     color: '#fff',
-    flex: 1,
-    textAlign: 'center',
+    marginRight: 8,
   },
   messageContainer: {
     padding: 10,
@@ -50,17 +82,17 @@ const styles = StyleSheet.create({
     maxWidth: '80%',
     marginBottom: 10,
     flexDirection: 'column',
-    alignItems: 'flex-start'
+    alignItems: 'flex-start',
   },
   senderMessage: {
-    backgroundColor: '#DCF8C6',
+    backgroundColor: '#D1FAE5', // Updated to a subtle teal
     alignSelf: 'flex-end',
-    alignItems: 'flex-end'
+    alignItems: 'flex-end',
   },
   receiverMessage: {
-    backgroundColor: '#FFF',
+    backgroundColor: '#E5E7EB', // Updated to a light gray
     alignSelf: 'flex-start',
-    alignItems: 'flex-start'
+    alignItems: 'flex-start',
   },
   messageText: { fontSize: 16, marginBottom: 5 },
   imageMessage: { width: 200, height: 200, marginBottom: 5 },
@@ -69,10 +101,16 @@ const styles = StyleSheet.create({
   inputContainer: {
     padding: 10,
     backgroundColor: '#fff',
+    borderTopWidth: 1,
+    borderTopColor: '#e0e0e0',
   },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: '#f0f0f0',
+    borderRadius: 25,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
   },
   pendingFileContainer: {
     flexDirection: 'row',
@@ -102,10 +140,10 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 20,
+    fontSize: 16,
+    paddingVertical: 8,
     paddingHorizontal: 10,
+    color: '#333',
   },
   sendButton: {
     justifyContent: 'center',
@@ -114,7 +152,6 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    marginLeft: 10
   },
   photoButton: {
     justifyContent: 'center',
@@ -123,7 +160,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    marginLeft: 10
+    marginRight: 5,
   },
   fullScreenContainer: {
     flex: 1,
@@ -151,7 +188,7 @@ const styles = StyleSheet.create({
 
 async function fetchReceiverPublicKey(receiverId, token) {
   try {
-    const response = await fetch(`http://10.161.161.197:8000/auth/user/${receiverId}/public_key/`, {
+    const response = await fetch(`${API_URL}/auth/user/${receiverId}/public_key/`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -240,11 +277,11 @@ class NoiseNN {
 
   async syncPublicKeyWithServer(publicKeyHex) {
     try {
-      const response = await fetch(`http://10.161.161.197:8000/auth/user/update_public_key/`, {
+      const response = await fetch(`${API_URL}/auth/user/update_public_key/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.token}`,
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({ public_key: publicKeyHex }),
       });
@@ -397,13 +434,12 @@ const VideoMessage = memo(({ uri, style, nonce, messageKey, ephemeralKey, noise 
   );
 });
 
-export default function ChatRoom() {
-  const { senderId: paramSenderId } = useLocalSearchParams();
+export default function ChatScreen() {
   const route = useRoute();
-  const { contactId, contactUsername } = route.params || {};
+  const { senderId, contactId, contactUsername } = route.params || {};
   const navigation = useNavigation();
 
-  const [senderId, setSenderId] = useState(null);
+  const [senderIdState, setSenderId] = useState(null);
   const [receiverId, setReceiverId] = useState(null);
   const [email, setEmail] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -416,30 +452,79 @@ export default function ChatRoom() {
   const noiseRef = useRef(null);
   const messageCache = useRef(new Set());
   const prevReceiverIdRef = useRef(null);
+  const [friendProfile, setFriendProfile] = useState(null);
+  const inputRef = useRef(null);
 
   useEffect(() => {
     checkAESSupport();
     navigation.setOptions({ headerShown: false });
   }, [navigation]);
 
+  const fetchFriendProfile = useCallback(async () => {
+    if (!contactUsername) return;
+
+    try {
+      const token = await AsyncStorage.getItem('token');
+      const response = await axios.get(`${API_URL}/profiles/friend/${contactUsername}/`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const profileData = response.data;
+      const now = new Date();
+      const lastSeen = profileData.last_seen ? new Date(profileData.last_seen) : null;
+      profileData.is_online = lastSeen && (now - lastSeen) < 5 * 60 * 1000;
+      setFriendProfile(profileData);
+    } catch (error) {
+      console.error('Failed to fetch friend profile:', error);
+      Alert.alert('Error', 'Failed to load friend profile');
+    }
+  }, [contactUsername]);
+
+  useEffect(() => {
+    fetchFriendProfile();
+    const interval = setInterval(fetchFriendProfile, 30000); // Refresh every 30 seconds
+    return () => clearInterval(interval);
+  }, [fetchFriendProfile]);
+
   const initializeParams = useCallback(async () => {
     try {
-      const [accessToken, userEmail, cachedSenderId] = await Promise.all([
-        AsyncStorage.getItem('access_token'),
+      let [token, userEmail, cachedSenderId] = await Promise.all([
+        AsyncStorage.getItem('token'),
         AsyncStorage.getItem('user_email'),
         AsyncStorage.getItem('user_id'),
       ]);
-      if (!accessToken || !userEmail || !cachedSenderId) {
+
+      if (!token) {
+        Alert.alert('Error', 'Authentication token missing. Please log in again.');
         navigation.navigate('index');
         return false;
       }
-      setToken(accessToken);
+
+      if (!userEmail || !cachedSenderId) {
+        const res = await axios.get(`${API_URL}/auth/profile/`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        userEmail = res.data.email;
+        cachedSenderId = res.data.id.toString();
+        await AsyncStorage.setItem('user_email', userEmail);
+        await AsyncStorage.setItem('user_id', cachedSenderId);
+      }
+
+      if (!token || !userEmail || !cachedSenderId) {
+        console.error('Missing required AsyncStorage items:', { token, userEmail, cachedSenderId });
+        Alert.alert('Error', 'Authentication data missing. Please log in again.');
+        navigation.navigate('index');
+        return false;
+      }
+
+      setToken(token);
       setEmail(userEmail);
 
-      const sId = paramSenderId ? parseInt(paramSenderId, 10) : parseInt(cachedSenderId, 10);
+      const sId = senderId ? parseInt(senderId, 10) : parseInt(cachedSenderId, 10);
       const rId = contactId ? parseInt(contactId, 10) : null;
 
       if (!sId || !rId) {
+        console.error('Invalid senderId or receiverId:', { sId, rId });
+        Alert.alert('Error', 'Invalid chat parameters. Returning to home screen.');
         navigation.navigate('index');
         return false;
       }
@@ -448,10 +533,12 @@ export default function ChatRoom() {
       setReceiverId(rId);
       return true;
     } catch (error) {
+      console.error('Initialize params error:', error);
+      Alert.alert('Error', 'Failed to initialize chat. Please try again.');
       navigation.navigate('index');
       return false;
     }
-  }, [paramSenderId, contactId, navigation]);
+  }, [senderId, contactId, contactUsername, navigation]);
 
   const resetState = useCallback(() => {
     setMessages([]);
@@ -473,25 +560,36 @@ export default function ChatRoom() {
     }
   }, [receiverId, resetState]);
 
-  const WS_URL = token && senderId && receiverId
-    ? `ws://10.161.161.197:8000/ws/chat/${senderId}/${receiverId}/?token=${token}`
-    : null;
-  const SERVER_HOST = 'http://10.161.161.197:8000';
+  useFocusEffect(
+    useCallback(() => {
+      initializeParams();
+    }, [initializeParams])
+  );
 
   const connectWebSocket = useCallback(async () => {
-    if (!WS_URL || socketRef.current?.readyState === WebSocket.OPEN) return;
+    console.log('Attempting WebSocket connection with:', { token, senderIdState, receiverId, email, socketState: socketRef.current?.readyState });
+    if (!token || !senderIdState || !receiverId || socketRef.current?.readyState === WebSocket.OPEN) {
+      console.log('WebSocket connection skipped:', { token, senderIdState, receiverId, socketState: socketRef.current?.readyState });
+      Alert.alert('Connection Warning', 'Unable to connect to chat. Please ensure you are logged in and try again.');
+      return;
+    }
 
-    socketRef.current = new WebSocket(WS_URL);
-    noiseRef.current = new NoiseNN(senderId, receiverId, token, email);
+    const wsUrl = `ws://${API_HOST}/ws/chat/${senderIdState}/${receiverId}/?token=${token}`;
+    console.log('Connecting to WebSocket URL:', wsUrl);
+    socketRef.current = new WebSocket(wsUrl);
+    noiseRef.current = new NoiseNN(senderIdState, receiverId, token, email);
 
     try {
       await noiseRef.current.initialize();
     } catch (error) {
+      console.error('NoiseNN initialization error:', error);
+      Alert.alert('Error', 'Failed to initialize encryption. Returning to home screen.');
       navigation.navigate('index');
       return;
     }
 
     socketRef.current.onopen = async () => {
+      console.log('WebSocket connected');
       socketRef.current.send(JSON.stringify({ request_history: true }));
     };
 
@@ -517,8 +615,8 @@ export default function ChatRoom() {
           setMessages(normalizeMessages(decryptedMessages.filter(msg => msg.type !== 'handshake')));
           scrollToBottom();
         } else if (
-          (data.sender === senderId && data.receiver === receiverId) ||
-          (data.sender === receiverId && data.receiver === senderId)
+          (data.sender === senderIdState && data.receiver === receiverId) ||
+          (data.sender === receiverId && data.receiver === senderIdState)
         ) {
           let decryptedMessage = { ...data };
           if (data.type === 'text' && data.message && data.nonce && data.ephemeral_key) {
@@ -541,27 +639,27 @@ export default function ChatRoom() {
 
     socketRef.current.onerror = (error) => {
       console.error("(NOBRIDGE) ERROR WebSocket Error:", error.message || error);
+      Alert.alert('Connection Error', 'Failed to connect to chat server. Please check your network and try again.');
     };
 
-    socketRef.current.onclose = () => {};
-  }, [senderId, receiverId, token, email, WS_URL, navigation]);
+    socketRef.current.onclose = () => {
+      console.log('WebSocket closed');
+      Alert.alert('Connection Closed', 'Chat connection closed. Please try reconnecting.');
+    };
+  }, [senderIdState, receiverId, token, email, navigation]);
 
-  useFocusEffect(
-    useCallback(() => {
-      initializeParams().then((success) => {
-        if (success && receiverId) {
-          connectWebSocket();
-        }
-      });
+  useEffect(() => {
+    if (token && senderIdState && receiverId && email) {
+      connectWebSocket();
+    }
 
-      return () => {
-        if (socketRef.current) {
-          socketRef.current.close();
-          socketRef.current = null;
-        }
-      };
-    }, [initializeParams, connectWebSocket, receiverId])
-  );
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.close();
+        socketRef.current = null;
+      }
+    };
+  }, [token, senderIdState, receiverId, email, connectWebSocket]);
 
   const encryptMessage = useCallback(async (plaintext) => {
     const { publicKey, key } = await noiseRef.current.generateMessageKey();
@@ -602,13 +700,16 @@ export default function ChatRoom() {
   }, []);
 
   const sendMessage = useCallback(async () => {
-    if (!senderId || !receiverId || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN || !noiseRef.current?.handshakeFinished) return;
+    if (!senderIdState || !receiverId || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN || !noiseRef.current?.handshakeFinished) {
+      Alert.alert('Cannot Send Message', 'Chat connection is not established. Please try again later.');
+      return;
+    }
 
     if (inputText.trim()) {
       try {
         const { ciphertext, nonce, ephemeralKey, messageKey } = await encryptMessage(inputText);
         const messageData = {
-          sender: senderId,
+          sender: senderIdState,
           receiver: receiverId,
           message: ciphertext,
           nonce,
@@ -622,18 +723,22 @@ export default function ChatRoom() {
         scrollToBottom();
       } catch (error) {
         console.error("(NOBRIDGE) ERROR Failed to send message:", error);
+        Alert.alert('Send Failed', 'Failed to send message: ' + error.message);
       }
     }
-  }, [senderId, receiverId, inputText, encryptMessage]);
+  }, [senderIdState, receiverId, inputText, encryptMessage]);
 
   const sendFile = useCallback(async (fileData) => {
-    if (!senderId || !receiverId || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN || !noiseRef.current?.handshakeFinished) return;
+    if (!senderIdState || !receiverId || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN || !noiseRef.current?.handshakeFinished) {
+      Alert.alert('Cannot Send File', 'Chat connection is not established. Please try again later.');
+      return;
+    }
 
     const { uri, fileName, mimeType, arrayBuffer } = fileData;
     try {
       const { encryptedData, nonce, ephemeralKey, messageKey } = await encryptFile(arrayBuffer);
       const metadata = {
-        sender: senderId,
+        sender: senderIdState,
         receiver: receiverId,
         file_name: fileName || `file_${Date.now()}`,
         file_type: mimeType || 'application/octet-stream',
@@ -650,8 +755,9 @@ export default function ChatRoom() {
       scrollToBottom();
     } catch (error) {
       console.error("(NOBRIDGE) ERROR Failed to send encrypted file:", error);
+      Alert.alert('File Send Failed', 'Failed to send file: ' + error.message);
     }
-  }, [senderId, receiverId, encryptFile]);
+  }, [senderIdState, receiverId, encryptFile]);
 
   const pickFile = useCallback(async () => {
     try {
@@ -671,13 +777,14 @@ export default function ChatRoom() {
       }
     } catch (error) {
       console.error("(NOBRIDGE) ERROR pickFile Error:", error);
+      Alert.alert('File Pick Failed', 'Failed to pick file: ' + error.message);
     }
   }, [sendFile]);
 
   const normalizeMessages = useCallback((messages) => {
     return messages.map(msg => {
       const fileUrl = msg.file_url && !msg.file_url.startsWith('http')
-        ? `${SERVER_HOST}${msg.file_url}`
+        ? `${API_URL}${msg.file_url}`
         : msg.file_url || msg.file;
 
       let type = msg.type || 'text';
@@ -728,124 +835,172 @@ export default function ChatRoom() {
       if (await Linking.canOpenURL(tempUri)) await Linking.openURL(tempUri);
     } catch (error) {
       console.error("(NOBRIDGE) ERROR Failed to open decrypted file:", error);
+      Alert.alert('File Open Failed', 'Failed to open file: ' + error.message);
     }
   }, []);
 
+  const handleContainerPress = (event) => {
+    const { locationY } = event.nativeEvent;
+    const inputAreaHeight = 100; // Approximate height of input container
+    const screenHeight = Dimensions.get('window').height;
+    
+    // Only dismiss keyboard if the tap is outside the input area
+    if (locationY < screenHeight - inputAreaHeight) {
+      Keyboard.dismiss();
+    }
+  };
+
+  const focusInput = () => {
+    inputRef.current?.focus();
+  };
+
   return (
-    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>{contactUsername || 'Unknown User'}</Text>
-          <TouchableOpacity onPress={() => navigation.openDrawer()}>
-            <Ionicons name="ellipsis-vertical" size={24} color="white" />
-          </TouchableOpacity>
-        </View>
+    <View style={styles.container}>
+      <TouchableWithoutFeedback onPress={handleContainerPress}>
+        <View style={{ flex: 1 }}>
+          <View style={styles.header}>
+            <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+              <Ionicons name="arrow-back" size={24} color="white" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.headerProfileContainer}
+              onPress={() => navigation.navigate('FriendProfile', { username: contactUsername })}
+            >
+              <View style={styles.profileImageContainer}>
+                <Image
+                  source={{ uri: friendProfile?.profile_picture || DEFAULT_AVATAR_ICON }}
+                  style={styles.headerProfileImage}
+                  resizeMode="cover"
+                  onError={() => console.log("Failed to load profile picture")}
+                />
+                {friendProfile?.is_online && (
+                  <View style={styles.onlineStatusRing} />
+                )}
+              </View>
+              <View style={styles.headerTitleContainer}>
+                <Text style={styles.headerTitle}>
+                  {friendProfile?.user?.first_name || contactUsername || 'Unknown User'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => navigation.goBack()}>
+              <Ionicons name="ellipsis-vertical" size={24} color="white" />
+            </TouchableOpacity>
+          </View>
 
-        <FlatList
-          ref={flatListRef}
-          data={messages}
-          renderItem={({ item }) => (
-            <View style={[
-              styles.messageContainer,
-              item.sender === senderId ? styles.senderMessage : styles.receiverMessage
-            ]}>
-              {item.type === 'photo' && item.file_url ? (
-                <ImageMessage
-                  uri={item.file_url}
-                  style={styles.imageMessage}
-                  nonce={item.nonce}
-                  messageKey={item.message_key}
-                  ephemeralKey={item.ephemeral_key}
-                  noise={noiseRef.current}
-                  onPress={() => setFullScreenImage(item.file_url)}
-                />
-              ) : item.type === 'video' && item.file_url ? (
-                <VideoMessage
-                  uri={item.file_url}
-                  style={styles.videoMessage}
-                  nonce={item.nonce}
-                  messageKey={item.message_key}
-                  ephemeralKey={item.ephemeral_key}
-                  noise={noiseRef.current}
-                />
-              ) : item.type === 'file' && item.file_url ? (
-                <TouchableOpacity onPress={() => openFile(item.file_url, item.nonce, item.ephemeral_key)}>
-                  <Text style={styles.messageText}>File: {item.file_name}</Text>
+          <FlatList
+            ref={flatListRef}
+            data={messages}
+            renderItem={({ item }) => (
+              <View style={[
+                styles.messageContainer,
+                item.sender === senderIdState ? styles.senderMessage : styles.receiverMessage
+              ]}>
+                {item.type === 'photo' && item.file_url ? (
+                  <ImageMessage
+                    uri={item.file_url}
+                    style={styles.imageMessage}
+                    nonce={item.nonce}
+                    messageKey={item.message_key}
+                    ephemeralKey={item.ephemeral_key}
+                    noise={noiseRef.current}
+                    onPress={() => setFullScreenImage(item.file_url)}
+                  />
+                ) : item.type === 'video' && item.file_url ? (
+                  <VideoMessage
+                    uri={item.file_url}
+                    style={styles.videoMessage}
+                    nonce={item.nonce}
+                    messageKey={item.message_key}
+                    ephemeralKey={item.ephemeral_key}
+                    noise={noiseRef.current}
+                  />
+                ) : item.type === 'file' && item.file_url ? (
+                  <TouchableOpacity onPress={() => openFile(item.file_url, item.nonce, item.ephemeral_key)}>
+                    <Text style={styles.messageText}>File: {item.file_name}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={styles.messageText}>{item.message}</Text>
+                )}
+                <Text style={styles.messageTime}>{formatTimestamp(item.timestamp)}</Text>
+              </View>
+            )}
+            keyExtractor={(item, index) => `${item.timestamp}-${item.sender}-${index}`}
+            contentContainerStyle={{ paddingBottom: 20 }}
+            initialNumToRender={6}
+            maxToRenderPerBatch={6}
+            windowSize={3}
+            removeClippedSubviews={true}
+            keyboardShouldPersistTaps="handled"
+          />
+
+          <View style={styles.inputContainer}>
+            {pendingFile && (
+              <View style={styles.pendingFileContainer}>
+                {pendingFile.mimeType.startsWith('image/') ? (
+                  <Image source={{ uri: pendingFile.uri }} style={styles.pendingImage} />
+                ) : pendingFile.mimeType.startsWith('video/') ? (
+                  <Video
+                    source={{ uri: pendingFile.uri }}
+                    style={styles.pendingImage}
+                    useNativeControls
+                    resizeMode="contain"
+                    isMuted={true}
+                  />
+                ) : (
+                  <Text style={styles.pendingFileText}>{pendingFile.fileName}</Text>
+                )}
+                <TouchableOpacity style={styles.removeFileButton} onPress={() => setPendingFile(null)}>
+                  <Ionicons name="close" size={20} color="#fff" />
                 </TouchableOpacity>
-              ) : (
-                <Text style={styles.messageText}>{item.message}</Text>
-              )}
-              <Text style={styles.messageTime}>{formatTimestamp(item.timestamp)}</Text>
-            </View>
-          )}
-          keyExtractor={(item, index) => `${item.timestamp}-${item.sender}-${index}`}
-          contentContainerStyle={{ paddingBottom: 20 }}
-          initialNumToRender={6}
-          maxToRenderPerBatch={6}
-          windowSize={3}
-          removeClippedSubviews={true}
-        />
-
-        <View style={styles.inputContainer}>
-          {pendingFile && (
-            <View style={styles.pendingFileContainer}>
-              {pendingFile.mimeType.startsWith('image/') ? (
-                <Image source={{ uri: pendingFile.uri }} style={styles.pendingImage} />
-              ) : pendingFile.mimeType.startsWith('video/') ? (
-                <Video
-                  source={{ uri: pendingFile.uri }}
-                  style={styles.pendingImage}
-                  useNativeControls
-                  resizeMode="contain"
-                  isMuted={true}
-                />
-              ) : (
-                <Text style={styles.pendingFileText}>{pendingFile.fileName}</Text>
-              )}
-              <TouchableOpacity style={styles.removeFileButton} onPress={() => setPendingFile(null)}>
-                <Ionicons name="close" size={20} color="#fff" />
+              </View>
+            )}
+            <View style={styles.inputRow}>
+              <TouchableOpacity style={styles.photoButton} onPress={pickFile}>
+                <Ionicons name="attach" size={24} color="#fff" />
+              </TouchableOpacity>
+              <TextInput
+                ref={inputRef}
+                style={styles.input}
+                placeholder="Type a message..."
+                placeholderTextColor="#888"
+                value={inputText}
+                onChangeText={setInputText}
+                onSubmitEditing={sendMessage}
+                onPressIn={focusInput}
+                autoFocus={true}
+                returnKeyType="send"
+                multiline={true}
+              />
+              <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
+                <Ionicons name="send" size={24} color="#fff" />
               </TouchableOpacity>
             </View>
-          )}
-          <View style={styles.inputRow}>
-            <TextInput
-              style={styles.input}
-              placeholder="Type a message..."
-              value={inputText}
-              onChangeText={setInputText}
-              onSubmitEditing={sendMessage}
-            />
-            <TouchableOpacity style={styles.photoButton} onPress={pickFile}>
-              <Ionicons name="attach" size={24} color="#fff" />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
-              <Ionicons name="send" size={24} color="#fff" />
-            </TouchableOpacity>
           </View>
         </View>
+      </TouchableWithoutFeedback>
 
-        <Modal
-          visible={!!fullScreenImage}
-          transparent={false}
-          animationType="fade"
-          onRequestClose={() => setFullScreenImage(null)}
-        >
-          <View style={styles.fullScreenContainer}>
-            <TouchableOpacity style={styles.closeButton} onPress={() => setFullScreenImage(null)}>
-              <Ionicons name="close" size={30} color="#fff" />
-            </TouchableOpacity>
-            <ImageMessage
-              uri={fullScreenImage}
-              style={styles.fullScreenImage}
-              nonce={messages.find(m => m.file_url === fullScreenImage)?.nonce}
-              messageKey={messages.find(m => m.file_url === fullScreenImage)?.message_key}
-              ephemeralKey={messages.find(m => m.file_url === fullScreenImage)?.ephemeral_key}
-              noise={noiseRef.current}
-              onPress={() => setFullScreenImage(null)}
-            />
-          </View>
-        </Modal>
-      </View>
-    </TouchableWithoutFeedback>
+      <Modal
+        visible={!!fullScreenImage}
+        transparent={false}
+        animationType="fade"
+        onRequestClose={() => setFullScreenImage(null)}
+      >
+        <View style={styles.fullScreenContainer}>
+          <TouchableOpacity style={styles.closeButton} onPress={() => setFullScreenImage(null)}>
+            <Ionicons name="close" size={30} color="#fff" />
+          </TouchableOpacity>
+          <ImageMessage
+            uri={fullScreenImage}
+            style={styles.fullScreenImage}
+            nonce={messages.find(m => m.file_url === fullScreenImage)?.nonce}
+            messageKey={messages.find(m => m.file_url === fullScreenImage)?.message_key}
+            ephemeralKey={messages.find(m => m.file_url === fullScreenImage)?.ephemeral_key}
+            noise={noiseRef.current}
+            onPress={() => setFullScreenImage(null)}
+          />
+        </View>
+      </Modal>
+    </View>
   );
 }

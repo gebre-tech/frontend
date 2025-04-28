@@ -1,10 +1,9 @@
-
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { persist, devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 
-const ENABLE_LOGS = true; // Enable logs for debugging hydration issues
+const ENABLE_LOGS = true;
 const logger = {
   info: (...args) => ENABLE_LOGS && console.log('[MessageStore]', ...args),
   error: (...args) => console.error('[MessageStore]', ...args),
@@ -12,7 +11,7 @@ const logger = {
 };
 
 const initialState = {
-  messages: [], // Ensure messages is always an array
+  messages: {}, // { [chatId]: { [messageId]: message } }
   typingUsers: {}, // { [chatId]: string[] }
 };
 
@@ -22,55 +21,68 @@ const useMessageStore = create(
       immer((set, get) => ({
         ...initialState,
         addMessage: (chatId, message) => {
-          if (!message.id && !message.tempId) {
+          const messageId = message.messageId || `${message.timestamp}-${message.sender}`;
+          if (!messageId) {
             logger.error('Skipping message without ID:', message);
             return;
           }
-          const key = message.id || message.tempId;
           set((state) => {
-            if (state.messages.some((m) => m.chatId === chatId && (m.id === key || m.tempId === key))) {
-              logger.info(`Message ${key} already exists in chat ${chatId}, skipping`);
+            if (!state.messages[chatId]) state.messages[chatId] = {};
+            if (state.messages[chatId][messageId]) {
+              logger.info(`Message ${messageId} already exists in chat ${chatId}, skipping`);
               return;
             }
-            state.messages.push({ chatId, messageId: key, ...message });
-            logger.info(`Added message ${key} to chat ${chatId}`);
+            state.messages[chatId][messageId] = {
+              ...message,
+              status: message.status || 'sent',
+              chatId,
+              messageId,
+            };
+            logger.info(`Added message ${messageId} to chat ${chatId}`);
           });
         },
         updateMessage: (chatId, messageId, updates) => {
           set((state) => {
-            const index = state.messages.findIndex((m) => m.chatId === chatId && (m.id === messageId || m.tempId === messageId));
-            if (index === -1) {
+            if (!state.messages[chatId]?.[messageId]) {
               logger.error(`Message ${messageId} not found in chat ${chatId}`);
               return;
             }
-            state.messages[index] = { ...state.messages[index], ...updates };
+            state.messages[chatId][messageId] = {
+              ...state.messages[chatId][messageId],
+              ...updates,
+            };
             logger.info(`Updated message ${messageId} in chat ${chatId}`);
           });
         },
         deleteMessage: (chatId, messageId) => {
           set((state) => {
-            const index = state.messages.findIndex((m) => m.chatId === chatId && (m.id === messageId || m.tempId === messageId));
-            if (index === -1) {
+            if (!state.messages[chatId]?.[messageId]) {
               logger.error(`Message ${messageId} not found in chat ${chatId}`);
               return;
             }
-            state.messages.splice(index, 1);
+            delete state.messages[chatId][messageId];
+            if (Object.keys(state.messages[chatId]).length === 0) {
+              delete state.messages[chatId];
+            }
             logger.info(`Deleted message ${messageId} from chat ${chatId}`);
           });
         },
         setMessages: (chatId, messages) => {
           set((state) => {
             const safeMessages = Array.isArray(messages) ? messages : [];
-            const normalizedMessages = safeMessages.map((msg) => ({
-              chatId,
-              messageId: msg.id || msg.tempId,
-              ...msg,
-            }));
-            state.messages = [
-              ...state.messages.filter((m) => m.chatId !== chatId),
-              ...normalizedMessages,
-            ];
-            logger.info(`Set ${normalizedMessages.length} messages for chat ${chatId}`);
+            state.messages[chatId] = {};
+            safeMessages.forEach((msg) => {
+              const key = msg.messageId || `${msg.timestamp}-${msg.sender}`;
+              if (key) {
+                state.messages[chatId][key] = {
+                  ...msg,
+                  status: msg.status || 'sent',
+                  chatId,
+                  messageId: key,
+                };
+              }
+            });
+            logger.info(`Set ${safeMessages.length} messages for chat ${chatId}`);
           });
         },
         addTypingUser: (chatId, username) => {
@@ -85,22 +97,30 @@ const useMessageStore = create(
           set((state) => {
             const chatTypingUsers = state.typingUsers[chatId] || [];
             state.typingUsers[chatId] = chatTypingUsers.filter((u) => u !== username);
+            if (state.typingUsers[chatId].length === 0) {
+              delete state.typingUsers[chatId];
+            }
             logger.info(`Removed typing user ${username} from chat ${chatId}`);
           });
         },
         clearMessages: (chatId) => {
           set((state) => {
-            state.messages = state.messages.filter((m) => m.chatId !== chatId);
+            delete state.messages[chatId];
             delete state.typingUsers[chatId];
             logger.info(`Cleared messages and typing users for chat ${chatId}`);
           });
         },
         clearAll: () => {
-          set((state) => {
-            state.messages = [];
-            state.typingUsers = {};
-            logger.info('Cleared all messages and typing users');
-          });
+          set(() => ({
+            messages: {},
+            typingUsers: {},
+          }));
+          logger.info('Cleared all messages and typing users');
+        },
+        getMessagesForChat: (senderId, receiverId) => {
+          const chatId = `chat_${Math.min(senderId, receiverId)}_${Math.max(senderId, receiverId)}`;
+          const messages = get().messages[chatId] || {};
+          return Object.values(messages).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
         },
       })),
       {
@@ -114,8 +134,7 @@ const useMessageStore = create(
                 return initialState;
               }
               const parsed = JSON.parse(value);
-              // Validate that messages is an array
-              if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.messages)) {
+              if (!parsed || typeof parsed !== 'object' || typeof parsed.messages !== 'object') {
                 logger.warn(`Invalid data in AsyncStorage for ${name}, resetting to initial state`);
                 await AsyncStorage.removeItem(name);
                 return initialState;

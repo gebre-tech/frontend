@@ -43,7 +43,8 @@
         }
       ],
       "expo-secure-store",
-      "react-native-video"
+      "react-native-video",
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true

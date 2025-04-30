@@ -11,6 +11,7 @@ export const AuthProvider = ({ children }) => {
   const [keys, setKeys] = useState({ publicKey: '', privateKey: '' });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  
 
   useEffect(() => {
     checkUser();

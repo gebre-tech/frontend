@@ -1,6 +1,6 @@
 // app/(tabs)/GroupsNavigator.js
 import { createStackNavigator } from '@react-navigation/stack';
-import Groups from './Groups';
+import Groups from './groups';
 import CreateGroupScreen from './CreateGroupScreen';
 import GroupChatScreen from './GroupChatScreen';
 import GroupInfo from './GroupInfo';

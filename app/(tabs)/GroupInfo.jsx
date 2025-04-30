@@ -1,22 +1,25 @@
-//app/(tabs)/GroupInfo.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   FlatList,
   TouchableOpacity,
   TextInput,
-  Alert,
+  ActivityIndicator,
+  Image,
 } from 'react-native';
-import { useRoute } from '@react-navigation/native';
+import { useRoute, useNavigation } from '@react-navigation/native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import tw from 'twrnc';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import Toast from 'react-native-toast-message';
 import { API_URL } from '../utils/constants';
 
 const GroupInfo = () => {
   const { groupId } = useRoute().params;
+  const navigation = useNavigation();
   const [group, setGroup] = useState(null);
   const [searchText, setSearchText] = useState('');
   const [users, setUsers] = useState([]);
@@ -61,7 +64,12 @@ const GroupInfo = () => {
           headers: { Authorization: `Bearer ${token}` },
         }
       );
-      Alert.alert('Success', 'Member added successfully');
+      Toast.show({
+        type: 'success',
+        text1: 'Success',
+        text2: 'Member added successfully',
+        position: 'bottom',
+      });
       fetchGroup();
     } catch (error) {
       handleError(error);
@@ -79,7 +87,12 @@ const GroupInfo = () => {
           headers: { Authorization: `Bearer ${token}` },
         }
       );
-      Alert.alert('Success', 'Member removed successfully');
+      Toast.show({
+        type: 'success',
+        text1: 'Success',
+        text2: 'Member removed successfully',
+        position: 'bottom',
+      });
       fetchGroup();
     } catch (error) {
       handleError(error);
@@ -88,19 +101,31 @@ const GroupInfo = () => {
 
   const handleError = (error) => {
     console.error('Error:', error);
-    Alert.alert('Error', error.response?.data?.error || error.message || 'An error occurred');
+    Toast.show({
+      type: 'error',
+      text1: 'Error',
+      text2: error.response?.data?.error || error.message || 'An error occurred',
+      position: 'bottom',
+    });
   };
 
-  React.useEffect(() => {
+  useEffect(() => {
     fetchGroup();
   }, [groupId]);
 
   const renderMember = ({ item }) => (
-    <View style={tw`flex-row justify-between items-center p-3 border-b border-gray-200`}>
-      <Text style={tw`text-lg text-gray-800`}>{item.first_name || item.username}</Text>
-      {group?.admin.id === item.id ? (
-        <Text style={tw`text-sm text-blue-500`}>Admin</Text>
-      ) : (
+    <View style={tw`flex-row items-center p-3 border-b border-gray-200 bg-white rounded-lg mx-2 my-1 shadow-sm`}>
+      <Image
+        source={{ uri: `https://ui-avatars.com/api/?name=${item.first_name}&background=random` }}
+        style={tw`w-10 h-10 rounded-full mr-3`}
+      />
+      <View style={tw`flex-1`}>
+        <Text style={tw`text-lg font-semibold text-gray-800`}>{item.first_name || item.username}</Text>
+        {group?.admin.id === item.id && (
+          <Text style={tw`text-sm text-blue-500`}>Admin</Text>
+        )}
+      </View>
+      {group?.admin.id !== item.id && (
         <TouchableOpacity onPress={() => removeMember(item.id)} style={tw`p-2`}>
           <Ionicons name="person-remove" size={20} color="red" />
         </TouchableOpacity>
@@ -110,10 +135,14 @@ const GroupInfo = () => {
 
   const renderUser = ({ item }) => (
     <TouchableOpacity
-      style={tw`flex-row items-center p-3 border-b border-gray-200`}
+      style={tw`flex-row items-center p-3 border-b border-gray-200 bg-white rounded-lg mx-2 my-1 shadow-sm`}
       onPress={() => addMember(item.id)}
     >
-      <Text style={tw`text-lg text-gray-800`}>{item.first_name || item.username}</Text>
+      <Image
+        source={{ uri: `https://ui-avatars.com/api/?name=${item.first_name}&background=random` }}
+        style={tw`w-10 h-10 rounded-full mr-3`}
+      />
+      <Text style={tw`text-lg font-semibold text-gray-800`}>{item.first_name || item.username}</Text>
     </TouchableOpacity>
   );
 
@@ -122,12 +151,36 @@ const GroupInfo = () => {
   }
 
   return (
-    <View style={tw`flex-1 bg-white`}>
-      <Text style={tw`text-2xl font-bold p-4`}>{group.name}</Text>
-      <Text style={tw`text-lg p-4 text-gray-600`}>Admin: {group.admin.first_name}</Text>
+    <View style={tw`flex-1 bg-gray-100`}>
+      {/* Gradient Header */}
+      <LinearGradient
+        colors={['#4A00E0', '#8E2DE2']}
+        style={tw`p-4 pt-10 flex-row items-center justify-between shadow-md`}
+      >
+        <TouchableOpacity onPress={() => navigation.goBack()}>
+          <Ionicons name="arrow-back" size={24} color="white" />
+        </TouchableOpacity>
+        <View style={tw`flex-row items-center`}>
+          <View style={tw`w-12 h-12 rounded-full bg-white flex items-center justify-center mr-3`}>
+            <Text style={tw`text-lg font-bold text-purple-600`}>{group.name[0]}</Text>
+          </View>
+          <View>
+            <Text style={tw`text-xl font-bold text-white`}>{group.name}</Text>
+            <Text style={tw`text-sm text-white opacity-70`}>{group.members.length} members</Text>
+          </View>
+        </View>
+        <View style={tw`w-10`} /> {/* Spacer */}
+      </LinearGradient>
+
+      {/* Group Info */}
+      <View style={tw`p-4 bg-white shadow-md rounded-b-2xl`}>
+        <Text style={tw`text-lg font-semibold text-gray-800`}>Admin: {group.admin.first_name}</Text>
+      </View>
+
+      {/* Search Users */}
       <View style={tw`p-4`}>
         <TextInput
-          style={tw`bg-gray-100 rounded-full px-4 py-2 text-gray-800 border border-gray-200 shadow-sm`}
+          style={tw`bg-white rounded-full px-4 py-3 text-gray-800 border border-gray-200 shadow-sm`}
           placeholder="Search users to add..."
           placeholderTextColor="#9CA3AF"
           value={searchText}
@@ -137,6 +190,8 @@ const GroupInfo = () => {
           }}
         />
       </View>
+
+      {/* Members or Search Results */}
       {searchText ? (
         <FlatList
           data={users.filter((u) => !group.members.some((m) => m.id === u.id))}
@@ -145,6 +200,7 @@ const GroupInfo = () => {
           ListEmptyComponent={
             <Text style={tw`text-center mt-5 text-gray-500`}>No users found</Text>
           }
+          contentContainerStyle={tw`pb-4`}
         />
       ) : (
         <FlatList
@@ -154,6 +210,7 @@ const GroupInfo = () => {
           ListEmptyComponent={
             <Text style={tw`text-center mt-5 text-gray-500`}>No members</Text>
           }
+          contentContainerStyle={tw`pb-4`}
         />
       )}
     </View>

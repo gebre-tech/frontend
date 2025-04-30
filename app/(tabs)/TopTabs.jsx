@@ -4,7 +4,7 @@ import { createMaterialTopTabNavigator } from '@react-navigation/material-top-ta
 import { Dimensions, View, Text, StyleSheet } from 'react-native';
 import ChatStack from './ChatStack';
 import Contacts from './Contacts'; // Ensure correct path and casing
-import Groups from './groups'; // Ensure correct path and casing
+import GroupsNavigator from './GroupNavigator'; // Ensure correct path and casing
 import FriendRequests from './FriendRequests'; // Ensure correct path and casing
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
@@ -118,7 +118,7 @@ export default function TopTabs() {
       />
       <Tab.Screen
         name="Group"
-        component={Groups}
+        component={GroupsNavigator}
         options={{
           tabBarIcon: ({ focused }) => (
             <Ionicons name="chatbox-ellipses" size={24} color={focused ? '#ffffff' : '#b0bec5'} />

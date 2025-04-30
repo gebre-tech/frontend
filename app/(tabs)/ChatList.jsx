@@ -1,519 +1,636 @@
-import React, { useState, useEffect, useContext, useCallback, useRef } from 'react';
+// app/(tabs)/ChatList.jsx
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
 import {
   View,
   Text,
   FlatList,
   TouchableOpacity,
   ActivityIndicator,
-  RefreshControl,
-  Alert,
   Image,
-  Animated,
-  Pressable,
+  Alert,
+  StyleSheet,
 } from 'react-native';
-import axios from 'axios';
-import { AuthContext } from '../../context/AuthContext';
-import { useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import axios from 'axios';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import tw from 'twrnc';
-import { useWebSocket } from '../hooks/useWebSocket';
-import useMessageStore from '../store/messageStore';
-import { API_URL, PLACEHOLDER_IMAGE } from '../utils/constants';
-import Swipeable from 'react-native-gesture-handler/Swipeable';
+import { AuthContext } from '../../context/AuthContext';
+import { API_URL, API_HOST, PLACEHOLDER_IMAGE } from '../utils/constants';
+import aesjs from 'aes-js';
+import { Buffer } from 'buffer';
+import { x25519 } from '@noble/curves/ed25519';
+import * as Crypto from 'expo-crypto';
 
-const INITIAL_CHAT_LIMIT = 5;
+// Import decryption logic from ChatScreen
+async function fetchReceiverPublicKey(receiverId, token) {
+  try {
+    const response = await fetch(`${API_URL}/auth/user/${receiverId}/public_key/`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+    const data = await response.json();
+    if (response.ok) {
+      console.log("(NOBRIDGE) LOG Fetched receiver_public_key:", data.public_key);
+      return data.public_key;
+    }
+    console.error("(NOBRIDGE) ERROR Failed to fetch receiver public key:", data);
+    return null;
+  } catch (error) {
+    console.error("(NOBRIDGE) ERROR Fetch receiver public key error:", error.message);
+    return null;
+  }
+}
+
+class NoiseNN {
+  constructor(senderId, receiverId, token, email) {
+    this.senderId = senderId;
+    this.receiverId = receiverId;
+    this.token = token;
+    this.email = email;
+    this.baseKeyPair = null;
+    this.remoteBasePublicKey = null;
+    this.baseSharedSecret = null;
+    this.handshakeFinished = false;
+  }
+
+  async initialize() {
+    try {
+      const [privateKeyHex, publicKeyHex] = await Promise.all([
+        AsyncStorage.getItem(`private_key_${this.email}`),
+        AsyncStorage.getItem(`public_key_${this.email}`),
+      ]);
+
+      console.log(`(NOBRIDGE) LOG Initializing NoiseNN for sender ${this.senderId}, receiver ${this.receiverId}`);
+      console.log(`(NOBRIDGE) LOG Private Key: ${privateKeyHex}, Public Key: ${publicKeyHex}`);
+
+      if (!privateKeyHex || !publicKeyHex || !this.isValidKeyPair(privateKeyHex, publicKeyHex)) {
+        throw new Error("Keys not found or invalid.");
+      }
+
+      this.baseKeyPair = {
+        privateKey: Buffer.from(privateKeyHex, 'hex'),
+        publicKey: Buffer.from(publicKeyHex, 'hex'),
+      };
+
+      const receiverPublicKeyHex = await fetchReceiverPublicKey(this.receiverId, this.token);
+      console.log(`(NOBRIDGE) LOG Receiver Public Key: ${receiverPublicKeyHex}`);
+
+      if (receiverPublicKeyHex && this.isValidPublicKey(receiverPublicKeyHex)) {
+        await AsyncStorage.setItem(`receiver_public_key_${this.receiverId}`, receiverPublicKeyHex);
+        this.remoteBasePublicKey = Buffer.from(receiverPublicKeyHex, 'hex');
+        const rawSharedSecret = x25519.scalarMult(this.baseKeyPair.privateKey, this.remoteBasePublicKey);
+        this.baseSharedSecret = Buffer.from(rawSharedSecret.slice(0, 32));
+        this.handshakeFinished = true;
+        console.log(`(NOBRIDGE) LOG Handshake finished, Shared Secret: ${this.baseSharedSecret.toString('hex')}`);
+      } else {
+        throw new Error("Failed to fetch or validate receiver's public key.");
+      }
+    } catch (error) {
+      console.error("(NOBRIDGE) ERROR NoiseNN initialization failed:", error.message);
+      throw error;
+    }
+  }
+
+  async generateKeyPair() {
+    const privateKey = Buffer.from(x25519.utils.randomPrivateKey());
+    const publicKey = Buffer.from(x25519.getPublicKey(privateKey));
+    return { privateKey, publicKey };
+  }
+
+  isValidPublicKey(publicKeyHex) {
+    try {
+      const publicKey = Buffer.from(publicKeyHex, 'hex');
+      return publicKey.length === 32;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  isValidKeyPair(privateKeyHex, publicKeyHex) {
+    try {
+      const privateKey = Buffer.from(privateKeyHex, 'hex');
+      const publicKey = Buffer.from(publicKeyHex, 'hex');
+      const computedPublicKey = Buffer.from(x25519.getPublicKey(privateKey));
+      return privateKey.length === 32 && publicKey.length === 32 && computedPublicKey.equals(publicKey);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async generateMessageKey(remoteEphemeralPublicKey = null) {
+    if (!this.handshakeFinished) {
+      throw new Error("Handshake not completed.");
+    }
+
+    const ephemeralKeyPair = remoteEphemeralPublicKey ? null : await this.generateKeyPair();
+    const ephPubKey = remoteEphemeralPublicKey ? Buffer.from(remoteEphemeralPublicKey, 'hex') : ephemeralKeyPair.publicKey;
+
+    const normalizedSharedSecret = Buffer.from(this.baseSharedSecret).slice(0, 32);
+    const normalizedEphPubKey = Buffer.from(ephPubKey).slice(0, 32);
+
+    const concatBytes = new Uint8Array(64);
+    concatBytes.set(normalizedSharedSecret, 0);
+    concatBytes.set(normalizedEphPubKey, 32);
+
+    const messageKey = await Crypto.digest(
+      Crypto.CryptoDigestAlgorithm.SHA256,
+      concatBytes
+    );
+    const key = Buffer.from(messageKey).slice(0, 32);
+
+    console.log(`(NOBRIDGE) LOG Generated Message Key: ${key.toString('hex')}`);
+
+    return {
+      publicKey: ephemeralKeyPair ? ephemeralKeyPair.publicKey : null,
+      key,
+    };
+  }
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#FFF' }, // White background
+});
+
+const ChatListItem = memo(({ item, navigateToChat, userId }) => {
+  const { contact, lastMessage, timestamp, isOnline, unreadCount } = item;
+
+  // Format timestamp for display (e.g., "Sun", "Mon", or time if today)
+  const formatTimestamp = (date) => {
+    if (!date) return '';
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    if (isToday) {
+      return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')} ${date.getHours() >= 12 ? 'PM' : 'AM'}`;
+    }
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return days[date.getDay()];
+  };
+
+  // Determine message preview
+  let messagePreview = '';
+  let isSentMessage = false;
+  if (lastMessage) {
+    if (lastMessage.decryptedContent) {
+      messagePreview = lastMessage.decryptedContent;
+    } else if (lastMessage.file) {
+      messagePreview = lastMessage.file_type?.startsWith('image/') ? 'Photo' : 'File';
+    } else {
+      messagePreview = '[Encrypted]';
+    }
+    // Check if the message was sent by the current user
+    isSentMessage = lastMessage.sender === userId;
+  }
+
+  return (
+    <TouchableOpacity
+      style={tw`flex-row items-center p-3 bg-white mx-2 my-0.5 border-b border-gray-200`}
+      onPress={() => navigateToChat(contact.friend_id, contact.friend.user.username)}
+    >
+      <View style={tw`relative`}>
+        <Image
+          source={{
+            uri: contact.friend.profile_picture || PLACEHOLDER_IMAGE,
+          }}
+          style={tw`w-10 h-10 rounded-full mr-3`}
+        />
+        {isOnline && (
+          <View
+            style={tw`absolute bottom-0 right-2 w-4 h-4 bg-green-500 rounded-full border-2 border-white`}
+          />
+        )}
+      </View>
+      <View style={tw`flex-1`}>
+        <Text style={tw`text-base font-semibold text-black`}>
+          {contact.friend.user.first_name || contact.friend.user.username}
+        </Text>
+        <Text
+          style={tw`text-xs mt-1 ${isSentMessage ? 'text-teal-600' : 'text-blue-600'}`}
+          numberOfLines={1}
+        >
+          {messagePreview || 'No messages yet'}
+        </Text>
+      </View>
+      <View style={tw`flex-col items-end`}>
+        <Text style={tw`text-xs text-gray-600`}>{formatTimestamp(timestamp)}</Text>
+        {unreadCount > 0 && (
+          <View style={tw`bg-red-500 rounded-full px-2 py-0.5 mt-1`}>
+            <Text style={tw`text-xs text-white`}>{unreadCount}</Text>
+          </View>
+        )}
+      </View>
+    </TouchableOpacity>
+  );
+});
 
 const ChatList = () => {
-  const { user } = useContext(AuthContext);
-  const [chats, setChats] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [chatList, setChatList] = useState([]);
+  const [loading, setLoading] = useState(false);
   const navigation = useNavigation();
-  const [highlightedChatIds, setHighlightedChatIds] = useState(new Set());
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const { user, logout } = React.useContext(AuthContext);
+  const [ws, setWs] = useState(null);
+  const [token, setToken] = useState(null);
+  const [email, setEmail] = useState(null);
+  const messageCache = useRef(new Map()); // Cache decrypted messages per contact
 
-  const messageStore = useMessageStore();
+  const initializeParams = useCallback(async () => {
+    try {
+      let [token, userEmail] = await Promise.all([
+        AsyncStorage.getItem('token'),
+        AsyncStorage.getItem('user_email'),
+      ]);
 
-  const {
-    onlineUsers,
-    newMessageNotifications,
-    clearNotifications,
-    subscribeToEvent,
-    isConnected,
-    retryConnection,
-    sendTypingStatus,
-  } = useWebSocket({ userId: user?.id, isGlobal: true });
+      if (!token || !userEmail) {
+        const res = await axios.get(`${API_URL}/auth/profile/`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        userEmail = res.data.email;
+        await AsyncStorage.setItem('user_email', userEmail);
+      }
 
-  const generateChatId = useCallback((senderId, receiverId) => {
-    if (!senderId || !receiverId) {
-      console.warn('Invalid senderId or receiverId:', { senderId, receiverId });
-      return null;
+      if (!token || !userEmail) {
+        console.error('Missing required AsyncStorage items:', { token, userEmail });
+        Alert.alert('Error', 'Authentication data missing. Please log in again.');
+        navigation.navigate('index');
+        return false;
+      }
+
+      setToken(token);
+      setEmail(userEmail);
+      console.log(`(NOBRIDGE) LOG Initialized params - Token: ${token}, Email: ${userEmail}`);
+      return true;
+    } catch (error) {
+      console.error('Initialize params error:', error.message);
+      Alert.alert('Error', 'Failed to initialize chat list. Please try again.');
+      navigation.navigate('index');
+      return false;
     }
-    return `chat_${Math.min(senderId, receiverId)}_${Math.max(senderId, receiverId)}`;
+  }, [navigation]);
+
+  const fetchMessagesForContact = useCallback(async (senderId, receiverId, token, email) => {
+    const wsUrl = `ws://${API_HOST}/ws/chat/${senderId}/${receiverId}/?token=${token}`;
+    const socket = new WebSocket(wsUrl);
+    const noise = new NoiseNN(senderId, receiverId, token, email);
+    let messages = [];
+
+    try {
+      await noise.initialize();
+
+      return new Promise((resolve) => {
+        socket.onopen = () => {
+          console.log(`(NOBRIDGE) LOG WebSocket opened for contact ${receiverId}`);
+          socket.send(JSON.stringify({ request_history: true }));
+        };
+
+        socket.onmessage = async (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.messages) {
+              const decryptedMessages = await Promise.all(data.messages.map(async (msg) => {
+                if (msg.type === 'text' && msg.message && msg.nonce && msg.ephemeral_key) {
+                  try {
+                    const { key } = await noise.generateMessageKey(msg.ephemeral_key);
+                    const iv = Buffer.from(msg.nonce, 'hex');
+                    const encryptedBytes = aesjs.utils.hex.toBytes(msg.message);
+                    const aesCbc = new aesjs.ModeOfOperation.cbc(key, iv);
+                    const decryptedBytes = aesCbc.decrypt(encryptedBytes);
+                    const decryptedText = aesjs.utils.utf8.fromBytes(aesjs.padding.pkcs7.strip(decryptedBytes));
+                    return { ...msg, decryptedContent: decryptedText };
+                  } catch (e) {
+                    return { ...msg, decryptedContent: "[Decryption Failed]" };
+                  }
+                }
+                return msg;
+              }));
+
+              messages = decryptedMessages
+                .filter((msg) => msg.type !== 'handshake')
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+              socket.close();
+              resolve(messages);
+            }
+          } catch (error) {
+            console.error(`(NOBRIDGE) ERROR Parsing message for contact ${receiverId}:`, error.message);
+            socket.close();
+            resolve([]);
+          }
+        };
+
+        socket.onerror = (error) => {
+          console.error(`(NOBRIDGE) ERROR WebSocket error for contact ${receiverId}:`, error.message);
+          socket.close();
+          resolve([]);
+        };
+
+        socket.onclose = () => {
+          console.log(`(NOBRIDGE) LOG WebSocket closed for contact ${receiverId}`);
+          resolve(messages);
+        };
+      });
+    } catch (error) {
+      console.error(`(NOBRIDGE) ERROR NoiseNN init failed for contact ${receiverId}:`, error.message);
+      socket.close();
+      return [];
+    }
   }, []);
 
-  const fetchChats = useCallback(async () => {
+  const fetchChatList = useCallback(async () => {
+    if (!user || !token || !email) return;
     try {
+      setLoading(true);
       const token = await AsyncStorage.getItem('token');
-      if (!token) throw new Error('No token found');
+      if (!token) throw new Error('No authentication token found');
 
-      const cachedChats = await AsyncStorage.getItem('cached-chats');
-      if (cachedChats) {
-        setChats(JSON.parse(cachedChats).slice(0, INITIAL_CHAT_LIMIT));
-      }
-
-      const response = await axios.get(`${API_URL}/chat/rooms/`, {
+      // Fetch contacts to get profile information
+      const contactsResponse = await axios.get(`${API_URL}/contacts/list_with_profiles/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      const contacts = contactsResponse.data || [];
+      console.log(`(NOBRIDGE) LOG Fetched ${contacts.length} contacts`);
 
-      const enhancedChats = await Promise.all(
-        (response.data || []).map(async (chat) => {
-          const updatedMembers = await Promise.all(
-            (chat.members || []).map(async (member) => {
-              if (!member?.profile_picture) {
-                try {
-                  const profileResponse = await axios.get(
-                    `${API_URL}/profiles/friend/${member.username}/`,
-                    { headers: { Authorization: `Bearer ${token}` } }
-                  );
-                  return { ...member, profile_picture: profileResponse.data.profile_picture };
-                } catch (error) {
-                  console.error(`Error fetching profile for ${member.username}:`, error);
-                  return { ...member, profile_picture: PLACEHOLDER_IMAGE };
-                }
-              }
-              return member;
-            })
-          );
+      // Fetch messages and calculate unread counts for each contact
+      const chatPromises = contacts.map(async (contact) => {
+        const isOnline =
+          contact.is_online ||
+          (contact.friend.last_seen && new Date() - new Date(contact.friend.last_seen) < 5 * 60 * 1000);
 
-          const chatId = chat.is_group
-            ? chat.id
-            : generateChatId(user.id, chat.members?.find((m) => m.id !== user.id)?.id);
+        // Fetch all messages for this contact
+        const messages = await fetchMessagesForContact(user.id, contact.friend_id, token, email);
+        const lastMessage = messages.length > 0 ? messages[0] : null;
 
-          if (!chatId) {
-            console.warn('Skipping chat with invalid chatId:', chat);
-            return null;
-          }
+        if (lastMessage) {
+          messageCache.current.set(contact.friend_id, lastMessage);
+        }
 
-          const chatMessages = messageStore.messages[chatId] || {};
-          const messages = Object.values(chatMessages);
-          if (messages.length > 0) {
-            return {
-              ...chat,
-              chatId,
-              members: updatedMembers,
-              last_message: messages[messages.length - 1],
-              unread_count: messages.filter(
-                (m) => m.status !== 'seen' && m.sender !== user.id
-              ).length,
-              delivered_count: messages.filter((m) => m.status === 'delivered').length,
-            };
-          }
-          return { ...chat, chatId, members: updatedMembers };
-        })
-      );
+        // Fetch last seen timestamp for this chat
+        const lastSeenTimestamp = await AsyncStorage.getItem(`lastSeen_${contact.friend_id}`);
+        const lastSeen = lastSeenTimestamp ? new Date(lastSeenTimestamp) : new Date(0);
 
-      const validChats = enhancedChats.filter((chat) => chat !== null);
-      const sortedChats = validChats.sort(
-        (a, b) =>
-          new Date(b.last_message?.timestamp || b.created_at) -
-          new Date(a.last_message?.timestamp || a.created_at)
-      );
+        // Count unread messages (received messages after last seen)
+        const unreadCount = messages.filter(
+          (msg) => msg.sender !== user.id && new Date(msg.created_at) > lastSeen
+        ).length;
 
-      setChats(sortedChats.slice(0, INITIAL_CHAT_LIMIT));
-      await AsyncStorage.setItem('cached-chats', JSON.stringify(sortedChats));
-      Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
+        return {
+          contact,
+          lastMessage,
+          timestamp: lastMessage ? new Date(lastMessage.created_at) : null,
+          isOnline,
+          unreadCount,
+        };
+      });
+
+      const chatData = await Promise.all(chatPromises);
+      // Sort by timestamp, most recent first
+      const sortedChatData = chatData
+        .filter((chat) => chat.lastMessage) // Only include chats with messages
+        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+      setChatList(sortedChatData);
+      console.log(`(NOBRIDGE) LOG Fetched and decrypted ${sortedChatData.length} chats`);
     } catch (error) {
-      console.error('Fetch chats error:', error);
-      Alert.alert('Error', error.message || 'Failed to fetch chats');
+      handleError(error);
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
-  }, [fadeAnim, user?.id, messageStore.messages, generateChatId]);
+  }, [user, token, email, fetchMessagesForContact]);
+
+  const handleError = (error) => {
+    console.error('Error:', error.message);
+    if (error.response?.status === 401) {
+      Alert.alert('Error', 'Session expired. Please log in again.', [
+        {
+          text: 'OK',
+          onPress: async () => {
+            await logout(navigation);
+            navigation.navigate('Login');
+          },
+        },
+      ]);
+    } else {
+      Alert.alert('Error', error.response?.data?.error || error.message || 'An error occurred');
+    }
+  };
+
+  const setupWebSocket = useCallback(async () => {
+    if (!token || !user) return;
+
+    const wsInstance = new WebSocket(`ws://${API_HOST}/ws/global/?token=${token}`);
+    wsInstance.onopen = () => console.log('ChatList WebSocket connected');
+    wsInstance.onmessage = async (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        console.log('ChatList WebSocket message:', data);
+
+        if (data.type === 'last_seen_update') {
+          setChatList((prev) =>
+            prev.map((chat) => {
+              if (chat.contact.friend.user.username === data.username) {
+                return {
+                  ...chat,
+                  contact: {
+                    ...chat.contact,
+                    friend: {
+                      ...chat.contact.friend,
+                      last_seen: data.last_seen,
+                    },
+                  },
+                };
+              }
+              return chat;
+            })
+          );
+        } else if (data.type === 'chat_message') {
+          // Handle new message in real-time
+          const { sender, receiver, message, nonce, ephemeral_key, created_at } = data;
+          const contactId = sender === user.id ? receiver : sender; // Identify the contact
+
+          // Fetch and decrypt the new message
+          const noise = new NoiseNN(user.id, contactId, token, email);
+          await noise.initialize();
+          let decryptedContent = '[Encrypted]';
+          if (message && nonce && ephemeral_key) {
+            try {
+              const { key } = await noise.generateMessageKey(ephemeral_key);
+              const iv = Buffer.from(nonce, 'hex');
+              const encryptedBytes = aesjs.utils.hex.toBytes(message);
+              const aesCbc = new aesjs.ModeOfOperation.cbc(key, iv);
+              const decryptedBytes = aesCbc.decrypt(encryptedBytes);
+              decryptedContent = aesjs.utils.utf8.fromBytes(aesjs.padding.pkcs7.strip(decryptedBytes));
+            } catch (error) {
+              console.error(`(NOBRIDGE) ERROR Decrypting new message for contact ${contactId}:`, error.message);
+              decryptedContent = '[Decryption Failed]';
+            }
+          }
+
+          // Fetch last seen timestamp for this chat
+          const lastSeenTimestamp = await AsyncStorage.getItem(`lastSeen_${contactId}`);
+          const lastSeen = lastSeenTimestamp ? new Date(lastSeenTimestamp) : new Date(0);
+
+          // Update the chat list with the new message
+          setChatList((prev) => {
+            const updatedChatList = [...prev];
+            const chatIndex = updatedChatList.findIndex(
+              (chat) => chat.contact.friend_id === contactId
+            );
+
+            const newMessage = {
+              ...data,
+              decryptedContent,
+              created_at: created_at || new Date().toISOString(),
+            };
+
+            const isUnread = sender !== user.id && new Date(newMessage.created_at) > lastSeen;
+
+            if (chatIndex !== -1) {
+              // Update existing chat
+              updatedChatList[chatIndex] = {
+                ...updatedChatList[chatIndex],
+                lastMessage: newMessage,
+                timestamp: new Date(newMessage.created_at),
+                unreadCount: isUnread
+                  ? updatedChatList[chatIndex].unreadCount + 1
+                  : updatedChatList[chatIndex].unreadCount,
+              };
+            } else {
+              // Fetch contact info for new chat
+              const contactsResponse = axios.get(`${API_URL}/contacts/list_with_profiles/`, {
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              const contacts = contactsResponse.data || [];
+              const contact = contacts.find((c) => c.friend_id === contactId);
+              if (contact) {
+                const isOnline =
+                  contact.is_online ||
+                  (contact.friend.last_seen && new Date() - new Date(contact.friend.last_seen) < 5 * 60 * 1000);
+                updatedChatList.push({
+                  contact,
+                  lastMessage: newMessage,
+                  timestamp: new Date(newMessage.created_at),
+                  isOnline,
+                  unreadCount: isUnread ? 1 : 0,
+                });
+              }
+            }
+
+            // Sort by timestamp, most recent first
+            return updatedChatList.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+          });
+
+          // Update cache
+          messageCache.current.set(contactId, newMessage);
+        }
+      } catch (error) {
+        console.error('WebSocket message parsing error:', error.message);
+      }
+    };
+    wsInstance.onerror = (error) => {
+      console.error('WebSocket error:', error.message);
+      setTimeout(setupWebSocket, 2000);
+    };
+    wsInstance.onclose = () => console.log('ChatList WebSocket closed');
+    setWs(wsInstance);
+
+    return () => {
+      if (wsInstance) wsInstance.close();
+    };
+  }, [token, user, email, fetchChatList]);
 
   useEffect(() => {
-    if (user) {
-      fetchChats();
-    }
-  }, [user, fetchChats]);
-
-  useEffect(() => {
-    const handleNewMessage = (data) => {
-      const { chatId, message } = data;
-      if (!chatId) {
-        console.warn('Received message with invalid chatId:', data);
-        return;
+    initializeParams().then((success) => {
+      if (success && user) {
+        fetchChatList();
+        setupWebSocket();
       }
+    });
 
-      messageStore.addMessage(chatId, {
-        ...message,
-        status: message.sender === user.id ? 'sent' : 'delivered',
-      });
+    // Periodic refresh every 30 seconds as a fallback
+    const interval = setInterval(fetchChatList, 30000);
 
-      setChats((prev) => {
-        let updatedChats = prev.filter((chat) => chat.chatId !== chatId);
-        const existingChat = prev.find((chat) => chat.chatId === chatId);
-        const friend = message.chat?.members?.find((m) => m.id !== user.id);
-        const newChat = {
-          id: chatId,
-          chatId,
-          members: message.chat?.members || [],
-          last_message: message,
-          unread_count: message.sender !== user.id ? (existingChat?.unread_count || 0) + 1 : 0,
-          delivered_count: message.delivered_to?.length > 0 ? 1 : 0,
-          is_group: message.chat?.is_group || false,
-          created_at: new Date().toISOString(),
-        };
-        updatedChats = [newChat, ...updatedChats]
-          .sort(
-            (a, b) =>
-              new Date(b.last_message?.timestamp || b.created_at) -
-              new Date(a.last_message?.timestamp || a.created_at)
-          )
-          .slice(0, INITIAL_CHAT_LIMIT);
-
-        AsyncStorage.setItem('cached-chats', JSON.stringify(updatedChats));
-        return updatedChats;
-      });
-
-      setHighlightedChatIds((prev) => new Set(prev).add(chatId));
-      Animated.sequence([
-        Animated.timing(fadeAnim, { toValue: 0.7, duration: 200, useNativeDriver: true }),
-        Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
-      ]).start();
-    };
-
-    const handleMessageDelivered = ({ chatId, messageId }) => {
-      if (!chatId) return;
-      messageStore.updateMessage(chatId, messageId, { status: 'delivered' });
-
-      setChats((prev) => {
-        let updatedChats = prev.filter((chat) => chat.chatId !== chatId);
-        const chatToUpdate = prev.find((chat) => chat.chatId === chatId) || {
-          chatId,
-          members: [],
-          is_group: false,
-          created_at: new Date().toISOString(),
-        };
-        const chatMessages = messageStore.messages[chatId] || {};
-        const messages = Object.values(chatMessages);
-        const updatedChat = {
-          ...chatToUpdate,
-          last_message: messages[messages.length - 1],
-          delivered_count: messages.filter((m) => m.status === 'delivered').length,
-          unread_count: messages.filter((m) => m.status !== 'seen' && m.sender !== user.id).length,
-        };
-        updatedChats = [updatedChat, ...updatedChats]
-          .sort(
-            (a, b) =>
-              new Date(b.last_message?.timestamp || b.created_at) -
-              new Date(a.last_message?.timestamp || a.created_at)
-          )
-          .slice(0, INITIAL_CHAT_LIMIT);
-
-        AsyncStorage.setItem('cached-chats', JSON.stringify(updatedChats));
-        return updatedChats;
-      });
-
-      setHighlightedChatIds((prev) => new Set(prev).add(chatId));
-    };
-
-    const handleMessageSeen = ({ chatId, messageId }) => {
-      if (!chatId) return;
-      messageStore.updateMessage(chatId, messageId, { status: 'seen' });
-
-      setChats((prev) => {
-        let updatedChats = prev.filter((chat) => chat.chatId !== chatId);
-        const chatToUpdate = prev.find((chat) => chat.chatId === chatId);
-        if (!chatToUpdate) return prev;
-        const chatMessages = messageStore.messages[chatId] || {};
-        const messages = Object.values(chatMessages);
-        const updatedChat = {
-          ...chatToUpdate,
-          last_message: messages[messages.length - 1],
-          delivered_count: messages.filter((m) => m.status === 'delivered').length,
-          unread_count: messages.filter((m) => m.status !== 'seen' && m.sender !== user.id).length,
-        };
-        updatedChats = [updatedChat, ...updatedChats]
-          .sort(
-            (a, b) =>
-              new Date(b.last_message?.timestamp || b.created_at) -
-              new Date(a.last_message?.timestamp || a.created_at)
-          )
-          .slice(0, INITIAL_CHAT_LIMIT);
-
-        AsyncStorage.setItem('cached-chats', JSON.stringify(updatedChats));
-        return updatedChats;
-      });
-    };
-
-    const handleTyping = ({ chatId, username, isTyping }) => {
-      if (isTyping) {
-        messageStore.addTypingUser(chatId, username);
-      } else {
-        messageStore.removeTypingUser(chatId, username);
+    return () => {
+      clearInterval(interval);
+      if (ws) {
+        ws.close();
+        console.log('ChatList WebSocket cleanup');
       }
     };
+  }, [user, fetchChatList, setupWebSocket, initializeParams]);
 
-    const unsubscribers = [
-      subscribeToEvent('message', handleNewMessage),
-      subscribeToEvent('message_delivered', handleMessageDelivered),
-      subscribeToEvent('message_seen', handleMessageSeen),
-      subscribeToEvent('typing', handleTyping),
-    ];
-
-    return () => unsubscribers.forEach((unsub) => unsub());
-  }, [
-    subscribeToEvent,
-    user?.id,
-    fadeAnim,
-    messageStore,
-    clearNotifications,
-    generateChatId,
-  ]);
-
-  const onRefresh = () => {
-    setRefreshing(true);
-    setHighlightedChatIds(new Set());
-    fetchChats();
-  };
-
-  const truncateMessage = (message) => {
-    if (!message) return '';
-    const lines = message.split('\n');
-    return lines.slice(0, 2).join('\n');
-  };
-
-  const deleteChat = async (chatId) => {
-    try {
-      const token = await AsyncStorage.getItem('token');
-      await axios.delete(`${API_URL}/chat/rooms/${chatId}/`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setChats((prev) => prev.filter((chat) => chat.chatId !== chatId));
-      messageStore.clearMessages(chatId);
-      await AsyncStorage.setItem(
-        'cached-chats',
-        JSON.stringify(chats.filter((chat) => chat.chatId !== chatId))
-      );
-      Alert.alert('Success', 'Chat deleted successfully');
-    } catch (error) {
-      console.error('Error deleting chat:', error);
-      Alert.alert('Error', 'Failed to delete chat');
-    }
-  };
-
-  const renderRightActions = (chatId) => (
-    <Pressable
-      style={tw`bg-red-500 justify-center items-center w-20 rounded-r-lg`}
-      onPress={() => {
-        Alert.alert('Delete Chat', 'Are you sure you want to delete this chat?', [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Delete', style: 'destructive', onPress: () => deleteChat(chatId) },
-        ]);
-      }}
-    >
-      <Ionicons name="trash" size={24} color="white" />
-    </Pressable>
+  useFocusEffect(
+    useCallback(() => {
+      if (user && token && email) fetchChatList();
+    }, [user, token, email, fetchChatList])
   );
 
-  const renderItem = ({ item }) => {
-    const friend = item.members.find((m) => m.id !== user.id);
-    const isOnline = onlineUsers.has(friend?.id);
-    const isHighlighted = highlightedChatIds.has(item.chatId);
-    const isSentMessage = item.last_message && item.last_message.sender === user.id;
-    const typingUsers = messageStore.typingUsers[item.chatId] || [];
-
-    let lastMessageText = '';
-    if (typingUsers.length > 0) {
-      lastMessageText = `${typingUsers.join(', ')} ${typingUsers.length > 1 ? 'are' : 'is'} typing...`;
-    } else if (item.last_message) {
-      if (item.last_message.type === 'text') {
-        if (isSentMessage) {
-          lastMessageText = `You: ${truncateMessage(item.last_message.message)}`;
-        } else if (item.is_group) {
-          lastMessageText = `${
-            item.last_message.sender?.first_name || item.last_message.sender?.username
-          }: ${truncateMessage(item.last_message.message)}`;
-        } else {
-          lastMessageText = truncateMessage(item.last_message.message);
-        }
-      } else if (item.last_message.type === 'photo') {
-        lastMessageText = isSentMessage ? 'You sent a photo' : `${friend?.first_name || friend?.username} sent a photo`;
-      } else if (item.last_message.type === 'video') {
-        lastMessageText = isSentMessage ? 'You sent a video' : `${friend?.first_name || friend?.username} sent a video`;
-      } else if (item.last_message.type === 'file') {
-        lastMessageText = isSentMessage ? 'You sent a file' : `${friend?.first_name || friend?.username} sent a file`;
-      }
-    } else {
-      lastMessageText = 'No messages yet';
+  const navigateToChat = (contactId, contactUsername) => {
+    if (!user) {
+      Alert.alert('Error', 'You must be logged in to start a chat.');
+      navigation.navigate('Login');
+      return;
     }
-
-    return (
-      <Swipeable renderRightActions={() => renderRightActions(item.chatId)}>
-        <Animated.View style={{ opacity: fadeAnim }}>
-          <View
-            style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-sm border-b border-gray-100 ${
-              isHighlighted ? 'bg-blue-50' : ''
-            }`}
-          >
-            <TouchableOpacity
-              onPress={() => {
-                if (!item.is_group) {
-                  navigation.navigate('FriendProfile', { username: friend?.username });
-                }
-              }}
-            >
-              <View style={tw`relative`}>
-                <Image
-                  source={{
-                    uri: friend?.profile_picture || PLACEHOLDER_IMAGE,
-                  }}
-                  style={tw`w-12 h-12 rounded-full mr-3`}
-                  resizeMode="cover"
-                  onError={(e) =>
-                    console.log(`Failed to load image for ${friend?.username}:`, e.nativeEvent.error)
-                  }
-                />
-                {isOnline && !item.is_group && (
-                  <View
-                    style={tw`absolute bottom-0 right-2 w-5 h-5 bg-green-500 rounded-full border-2 border-white`}
-                  />
-                )}
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={tw`flex-1 flex-row justify-between items-center`}
-              onPress={async () => {
-                if (item.unread_count > 0) {
-                  try {
-                    const token = await AsyncStorage.getItem('token');
-                    await axios.post(
-                      `${API_URL}/chat/mark-as-read/${item.id}/`,
-                      {},
-                      { headers: { Authorization: `Bearer ${token}` } }
-                    );
-                    const chatMessages = messageStore.messages[item.chatId] || {};
-                    Object.keys(chatMessages).forEach((messageId) => {
-                      if (chatMessages[messageId].status !== 'seen') {
-                        messageStore.updateMessage(item.chatId, messageId, { status: 'seen' });
-                      }
-                    });
-                    setChats((prev) =>
-                      prev.map((chat) =>
-                        chat.chatId === item.chatId ? { ...chat, unread_count: 0 } : chat
-                      )
-                    );
-                    setHighlightedChatIds((prev) => {
-                      const newSet = new Set(prev);
-                      newSet.delete(item.chatId);
-                      return newSet;
-                    });
-                    clearNotifications(item.chatId);
-                  } catch (error) {
-                    console.error('Error marking as read:', error);
-                  }
-                }
-
-                navigation.navigate('ChatScreen', {
-                  senderId: user.id,
-                  contactId: friend?.id,
-                  contactUsername: friend?.username,
-                });
-              }}
-              onLongPress={() => {
-                Alert.alert('Chat Options', '', [
-                  { text: 'Delete Chat', style: 'destructive', onPress: () => deleteChat(item.chatId) },
-                  { text: 'Cancel', style: 'cancel' },
-                ]);
-              }}
-            >
-              <View style={tw`flex-1`}>
-                <View style={tw`flex-row justify-between`}>
-                  <Text style={tw`text-lg font-semibold text-gray-800`}>
-                    {item.is_group
-                      ? item.name || `Group ${item.id}`
-                      : item.name || friend?.first_name || 'Unknown'}
-                  </Text>
-                  <Text style={tw`text-xs text-gray-500`}>
-                    {item.last_message
-                      ? new Date(item.last_message.timestamp).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })
-                      : ''}
-                  </Text>
-                </View>
-                <Text
-                  style={tw`${
-                    isSentMessage ? 'text-blue-600' : 'text-gray-600'
-                  } text-sm mt-1 ${item.unread_count > 0 ? 'font-medium' : ''}`}
-                  numberOfLines={2}
-                  ellipsizeMode="tail"
-                >
-                  {lastMessageText}
-                </Text>
-                {!item.is_group && (
-                  <Text
-                    style={tw`text-xs mt-1 ${isOnline ? 'text-green-500' : 'text-gray-500'}`}
-                  >
-                    {isOnline ? 'Online' : 'Offline'}
-                  </Text>
-                )}
-                {isSentMessage && item.last_message && (
-                  <Text style={tw`text-xs text-gray-500 mt-1`}>
-                    {item.last_message.status === 'seen'
-                      ? '✓✓ Seen'
-                      : item.last_message.status === 'delivered'
-                      ? '✓✓ Delivered'
-                      : '✓ Sent'}
-                  </Text>
-                )}
-              </View>
-              {(item.unread_count > 0 || item.delivered_count > 0) && (
-                <View style={tw`flex-row items-center`}>
-                  {item.delivered_count > 0 && (
-                    <Text style={tw`text-xs text-gray-500 mr-2`}>✓</Text>
-                  )}
-                  {item.unread_count > 0 && (
-                    <View style={tw`bg-blue-500 rounded-full px-2 py-1`}>
-                      <Text style={tw`text-white text-xs font-bold`}>{item.unread_count}</Text>
-                    </View>
-                  )}
-                </View>
-              )}
-            </TouchableOpacity>
-          </View>
-        </Animated.View>
-      </Swipeable>
-    );
+    // Update last seen timestamp when entering the chat
+    const now = new Date().toISOString();
+    AsyncStorage.setItem(`lastSeen_${contactId}`, now).then(() => {
+      // Reset unread count for this chat
+      setChatList((prev) =>
+        prev.map((chat) =>
+          chat.contact.friend_id === contactId ? { ...chat, unreadCount: 0 } : chat
+        )
+      );
+      navigation.navigate('ChatScreen', {
+        senderId: user.id,
+        contactId,
+        contactUsername,
+      });
+    });
   };
 
-  if (loading) {
+  const navigateToContacts = () => {
+    navigation.navigate('Contacts', { refresh: true });
+  };
+
+  if (!user) {
     return (
-      <ActivityIndicator size="large" color="#007AFF" style={tw`flex-1 justify-center`} />
+      <View style={tw`flex-1 justify-center items-center bg-gray-100`}>
+        <Text style={tw`text-lg text-gray-600 mb-4`}>Please log in to view chats.</Text>
+        <TouchableOpacity
+          style={tw`bg-blue-500 px-6 py-2 rounded-full`}
+          onPress={() => navigation.navigate('Login')}
+        >
+          <Text style={tw`text-white font-semibold`}>Go to Login</Text>
+        </TouchableOpacity>
+      </View>
     );
   }
 
   return (
-    <View style={tw`flex-1 bg-gray-100`}>
-      <FlatList
-        data={chats}
-        renderItem={renderItem}
-        keyExtractor={(chat, index) => chat.chatId?.toString() ?? `fallback-${index}`}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        ListEmptyComponent={
-          <Text style={tw`text-center mt-5 text-gray-500`}>No chats available</Text>
-        }
-      />
+    <View style={styles.container}>
+      {loading ? (
+        <ActivityIndicator size="large" color="#007AFF" style={tw`flex-1 justify-center`} />
+      ) : (
+        <FlatList
+          data={chatList}
+          renderItem={({ item }) => (
+            <ChatListItem item={item} navigateToChat={navigateToChat} userId={user.id} />
+          )}
+          keyExtractor={(item) => item.contact.friend_id.toString()}
+          ListEmptyComponent={
+            <Text style={tw`text-center mt-5 text-gray-500`}>No chats available</Text>
+          }
+          contentContainerStyle={tw``} // Removed pb-16 since bottom nav bar is gone
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+        />
+      )}
       <TouchableOpacity
-        style={tw`absolute bottom-6 right-6 bg-blue-500 rounded-full w-16 h-16 justify-center items-center shadow-lg`}
-        onPress={() => navigation.navigate('Contacts')}
+        style={tw`absolute bottom-5 right-5 bg-blue-500 rounded-full p-4 shadow-lg`} // Adjusted position
+        onPress={navigateToContacts}
       >
-        <Ionicons name="chatbubble-ellipses" size={24} color="#fff" />
+        <Ionicons name="chatbubble-outline" size={24} color="white" />
       </TouchableOpacity>
     </View>
   );

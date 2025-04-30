@@ -35,7 +35,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     padding: 15,
-    backgroundColor: 'transparent',
+    backgroundColor: '#1a73e8',
     backgroundImage: 'linear-gradient(to right, #1E90FF, #8A2BE2)',
   },
   backButton: {

@@ -13,17 +13,26 @@ import {
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { createStackNavigator } from '@react-navigation/stack';
 import { Ionicons } from '@expo/vector-icons';
 import debounce from 'lodash/debounce';
 import tw from 'twrnc';
 import { AuthContext } from '../../context/AuthContext';
 import { API_URL, API_HOST, PLACEHOLDER_IMAGE } from '../utils/constants';
+import ChatScreen from './chatScreen';
 
-const Contacts = () => {
+// Assuming FriendProfile exists in your app
+import FriendProfile from './FriendProfile'; // Adjust the path as needed
+
+// Define the Stack Navigator
+const Stack = createStackNavigator();
+
+// The Contacts list UI and logic
+const ContactsScreen = ({ navigation }) => {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
-  const navigation = useNavigation();
+  const parentNavigation = useNavigation();
   const { user, logout } = React.useContext(AuthContext);
   const [ws, setWs] = useState(null);
 
@@ -69,14 +78,13 @@ const Contacts = () => {
     async (friendId, friendUsername) => {
       if (!user) {
         Alert.alert('Error', 'You must be logged in to start a chat.');
-        navigation.navigate('Login');
+        parentNavigation.navigate('Login');
         return;
       }
       try {
         const token = await AsyncStorage.getItem('token');
         if (!token) throw new Error('No authentication token found');
 
-        // Navigate to ChatScreen with required parameters
         navigation.navigate('ChatScreen', {
           senderId: user.id,
           contactId: friendId,
@@ -91,7 +99,14 @@ const Contacts = () => {
         Alert.alert('Error', error.response?.data?.error || error.message || 'Failed to start chat');
       }
     },
-    [user, navigation]
+    [user, navigation, parentNavigation]
+  );
+
+  const viewProfile = useCallback(
+    (username) => {
+      navigation.navigate('FriendProfile', { username });
+    },
+    [navigation]
   );
 
   const removeFriend = async (friendId) => {
@@ -120,8 +135,8 @@ const Contacts = () => {
         {
           text: 'OK',
           onPress: async () => {
-            await logout(navigation);
-            navigation.navigate('Login');
+            await logout(parentNavigation);
+            parentNavigation.navigate('Login');
           },
         },
       ]);
@@ -181,12 +196,12 @@ const Contacts = () => {
 
   useFocusEffect(
     useCallback(() => {
-      const currentRoute = navigation.getState()?.routes.find((r) => r.name === 'Contacts');
+      const currentRoute = parentNavigation.getState()?.routes.find((r) => r.name === 'Contacts');
       if (currentRoute?.params?.refresh) {
         fetchContacts();
-        navigation.setParams({ refresh: false });
+        parentNavigation.setParams({ refresh: false });
       }
-    }, [fetchContacts, navigation])
+    }, [fetchContacts, parentNavigation])
   );
 
   useEffect(() => {
@@ -203,7 +218,10 @@ const Contacts = () => {
         style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-sm border-b border-gray-100`}
         onPress={() => startChat(item.friend_id, item.friend.user.username)}
       >
-        <View style={tw`relative`}>
+        <TouchableOpacity
+          style={tw`relative`}
+          onPress={() => viewProfile(item.friend.user.username)}
+        >
           <Image
             source={{
               uri: item.friend.profile_picture || PLACEHOLDER_IMAGE,
@@ -215,7 +233,7 @@ const Contacts = () => {
               style={tw`absolute bottom-0 right-2 w-5 h-5 bg-green-500 rounded-full border-2 border-white`}
             />
           )}
-        </View>
+        </TouchableOpacity>
         <View style={tw`flex-1`}>
           <Text style={tw`text-lg font-semibold text-gray-800`}>
             {item.friend.user.first_name || item.friend.user.username}
@@ -243,7 +261,7 @@ const Contacts = () => {
         <Text style={tw`text-lg text-gray-600 mb-4`}>Please log in to view contacts.</Text>
         <TouchableOpacity
           style={tw`bg-blue-500 px-6 py-2 rounded-full`}
-          onPress={() => navigation.navigate('Login')}
+          onPress={() => parentNavigation.navigate('Login')}
         >
           <Text style={tw`text-white font-semibold`}>Go to Login</Text>
         </TouchableOpacity>
@@ -279,6 +297,22 @@ const Contacts = () => {
         />
       )}
     </View>
+  );
+};
+
+// Main Contacts component with stack navigator
+const Contacts = () => {
+  return (
+    <Stack.Navigator
+      initialRouteName="ContactsScreen"
+      screenOptions={{
+        headerShown: false,
+      }}
+    >
+      <Stack.Screen name="ContactsScreen" component={ContactsScreen} />
+      <Stack.Screen name="ChatScreen" component={ChatScreen} />
+      <Stack.Screen name="FriendProfile" component={FriendProfile} />
+    </Stack.Navigator>
   );
 };
 

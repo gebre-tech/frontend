@@ -1,3 +1,4 @@
+import 'react-native-get-random-values';
 import React from "react";
 import { AuthProvider } from "../context/AuthContext"; // Import AuthProvider
 import Authenticated from "./authenticated"; // Corrected typo from "Auhthenticated"

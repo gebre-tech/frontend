@@ -6,7 +6,7 @@ import ChatList from "./ChatList";
 import ChatScreen from "./chatScreen";
 import FriendProfile from "./FriendProfile";
 import Contacts from "./Contacts";
-
+import { LinearGradient } from 'expo-linear-gradient';
 const Stack = createStackNavigator();
 
 export default function ChatStack() {
@@ -50,6 +50,15 @@ export default function ChatStack() {
         options={{ 
           title: "Contacts",
           headerLeftContainerStyle: { paddingLeft: 10 },
+          headerBackground: () => (
+            <LinearGradient
+              colors={['#007AFF', '#0055A4']} // Adjust colors to match your app’s existing header style
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={{ flex: 1 }}
+            />
+          ),
+          headerTitleStyle: { color: 'white', fontWeight: 'bold', fontSize: 18 }, // Ensuring clear readability
         }} 
       />
       <Stack.Screen 
@@ -58,6 +67,7 @@ export default function ChatStack() {
         options={({ route }) => ({ 
           title: route.params?.username || "Profile",
           headerLeftContainerStyle: { paddingLeft: 10 },
+          headerShown: false,
         })} 
       />
     </Stack.Navigator>

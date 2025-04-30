@@ -1,4 +1,3 @@
-// app/tabs/CustomDrawerContent.jsx
 import React, { useEffect, useState, useContext, useCallback, useRef } from 'react';
 import {
   View, Text, Image, StyleSheet, TouchableOpacity, TextInput,
@@ -14,8 +13,8 @@ import axios from 'axios';
 import { AuthContext } from '../../context/AuthContext';
 import { Dimensions } from 'react-native';
 import debounce from 'lodash/debounce';
-import { API_URL, API_HOST,PLACEHOLDER_IMAGE,DEFAULT_AVATAR_ICON} from '../utils/constants';
-
+import { LinearGradient } from 'expo-linear-gradient';
+import { API_URL, API_HOST, PLACEHOLDER_IMAGE, DEFAULT_AVATAR_ICON } from '../utils/constants';
 
 const WS_URL = `ws://${API_HOST}/ws/profile/`;
 const { width } = Dimensions.get('window');
@@ -31,18 +30,19 @@ const COLORS = {
   text: '#212121',
   accent: '#ff4081',
   shadow: 'rgba(0, 0, 0, 0.2)',
+  green: '#078930',
+  yellow: '#FCDD09',
+  red: '#DA121A',
 };
 
 const CustomAlert = ({ visible, title, message, onClose }) => {
   const [fadeAnim] = useState(new Animated.Value(0));
 
   useEffect(() => {
-    Animated.timing(fadeAnim, {
-      toValue: visible ? 1 : 0,
-      duration: visible ? 300 : 200,
-      useNativeDriver: true,
-    }).start();
-  }, [visible]);
+    Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start(() => {
+      console.log("Animation finished, fadeAnim value:", fadeAnim);
+    });
+  }, [fadeAnim]);
 
   return (
     <Modal visible={visible} transparent animationType="none">
@@ -86,14 +86,14 @@ export default function CustomDrawerContent(props) {
       });
 
       const profileData = response.data;
-      console.log("Raw profile data from backend:", profileData);  // Log raw response
+      console.log("Raw profile data from backend:", profileData);
       setUsername(profileData.user.username);
       setFirstName(profileData.user.first_name || "");
       setLastName(profileData.user.last_name || "");
       setBio(profileData.bio || "");
       setLastSeen(profileData.last_seen);
-      const newProfileImage = profileData.profile_picture 
-        ? `${profileData.profile_picture}?t=${Date.now()}` 
+      const newProfileImage = profileData.profile_picture
+        ? `${profileData.profile_picture}?t=${Date.now()}`
         : PLACEHOLDER_IMAGE;
       setProfileImage(newProfileImage);
       console.log("Profile image set to (fetch):", newProfileImage);
@@ -134,8 +134,8 @@ export default function CustomDrawerContent(props) {
           setFirstName(data.first_name);
           setLastName(data.last_name);
           setBio(data.bio);
-          const newProfileImage = data.profile_picture 
-            ? `${data.profile_picture}?t=${Date.now()}` 
+          const newProfileImage = data.profile_picture
+            ? `${data.profile_picture}?t=${Date.now()}`
             : PLACEHOLDER_IMAGE;
           setProfileImage(newProfileImage);
           console.log("Profile image set to (WebSocket):", newProfileImage);
@@ -264,9 +264,9 @@ export default function CustomDrawerContent(props) {
       });
 
       const updatedProfile = uploadResponse.data;
-      console.log("Raw updated profile data from backend:", updatedProfile);  // Log raw response
-      const newProfileImage = updatedProfile.profile_picture 
-        ? `${updatedProfile.profile_picture}?t=${Date.now()}` 
+      console.log("Raw updated profile data from backend:", updatedProfile);
+      const newProfileImage = updatedProfile.profile_picture
+        ? `${updatedProfile.profile_picture}?t=${Date.now()}`
         : PLACEHOLDER_IMAGE;
       setProfileImage(newProfileImage);
       setUsername(updatedProfile.user.username);
@@ -317,127 +317,144 @@ export default function CustomDrawerContent(props) {
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.flexContainer}>
-      <DrawerContentScrollView {...props}>
-        <Animated.View style={[styles.profileContainer, { opacity: fadeAnim }]}>
-          <TouchableOpacity
-            onPress={() => (isEditing ? pickImage() : setIsEditing(true))}
-            style={styles.imageContainer}
-            activeOpacity={0.7}
-          >
-            <Image
-              source={{ uri: profileImage }}
-              style={styles.profileImage}
-              resizeMode="cover"
-              onError={(e) => console.error("Image load error:", e.nativeEvent.error)}
-            />
-            <View style={styles.editIcon}>
-              <MaterialCommunityIcons name={isEditing ? "camera" : "pencil"} size={22} color={COLORS.white} />
-            </View>
-          </TouchableOpacity>
-
-          <Text style={styles.profileName}>
-            {isEditing ? "Edit Profile" : `${firstName} ${lastName}`}
-          </Text>
-
-          {isEditing ? (
-            <>
-              <View style={styles.inputContainer}>
-                <MaterialCommunityIcons name="account" size={20} color={COLORS.secondary} />
-                <TextInput
-                  style={styles.input}
-                  value={username}
-                  onChangeText={setUsername}
-                  placeholder="Username"
-                  placeholderTextColor={COLORS.secondary}
-                />
+      <DrawerContentScrollView
+        {...props}
+        style={{
+          elevation: 100,
+          zIndex: 100,
+        }}
+      >
+        <LinearGradient
+          colors={[COLORS.green, COLORS.yellow, COLORS.red]}
+          style={styles.gradientContainer}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+        >
+          <Animated.View style={[styles.profileContainer, { opacity: fadeAnim }]}>
+            <TouchableOpacity
+              onPress={() => (isEditing ? pickImage() : setIsEditing(true))}
+              style={styles.imageContainer}
+              activeOpacity={0.7}
+            >
+              <Image
+                source={{ uri: profileImage }}
+                style={styles.profileImage}
+                resizeMode="cover"
+                onError={(e) => console.error("Image load error:", e.nativeEvent.error)}
+              />
+              <View style={styles.editIcon}>
+                <MaterialCommunityIcons name={isEditing ? "camera" : "pencil"} size={22} color={COLORS.white} />
               </View>
-              <View style={styles.inputContainer}>
-                <MaterialCommunityIcons name="account-outline" size={20} color={COLORS.secondary} />
-                <TextInput
-                  style={styles.input}
-                  value={firstName}
-                  onChangeText={setFirstName}
-                  placeholder="First Name"
-                  placeholderTextColor={COLORS.secondary}
-                />
-              </View>
-              <View style={styles.inputContainer}>
-                <MaterialCommunityIcons name="account-outline" size={20} color={COLORS.secondary} />
-                <TextInput
-                  style={styles.input}
-                  value={lastName}
-                  onChangeText={setLastName}
-                  placeholder="Last Name"
-                  placeholderTextColor={COLORS.secondary}
-                />
-              </View>
-              <View style={styles.inputContainer}>
-                <MaterialCommunityIcons name="text" size={20} color={COLORS.secondary} />
-                <TextInput
-                  style={[styles.input, styles.bioInput]}
-                  value={bio}
-                  onChangeText={setBio}
-                  placeholder="Tell us about yourself"
-                  placeholderTextColor={COLORS.secondary}
-                  multiline
-                  maxLength={200}
-                />
-              </View>
-              <TouchableOpacity
-                style={[styles.updateButton, loading && styles.buttonDisabled]}
-                onPress={updateProfile}
-                disabled={loading}
-                activeOpacity={0.7}
-              >
-                {loading ? (
-                  <ActivityIndicator color={COLORS.white} />
-                ) : (
-                  <Text style={styles.updateButtonText}>Save Changes</Text>
-                )}
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={() => { setIsEditing(false); debouncedFetchProfile(); }}
-                disabled={loading}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-            </>
-          ) : (
-            <View style={styles.profileInfo}>
-              <View style={styles.infoRow}>
-                <MaterialCommunityIcons name="account" size={20} color={COLORS.secondary} />
-                <Text style={styles.profileText}>@{username}</Text>
-              </View>
-              <View style={styles.infoRow}>
-                <MaterialCommunityIcons name="text" size={20} color={COLORS.secondary} />
-                <Text style={styles.profileText}>{bio || "No bio yet"}</Text>
-              </View>
-              {lastSeen && (
-                <View style={styles.infoRow}>
-                  <MaterialCommunityIcons name="clock-outline" size={20} color={COLORS.secondary} />
-                  <Text style={styles.profileText}>
-                    Last seen: {new Date(lastSeen).toLocaleTimeString()}
-                  </Text>
-                </View>
-              )}
-            </View>
-          )}
-          {!isEditing && (
-            <TouchableOpacity style={styles.refreshButton} onPress={refreshProfile}>
-              <MaterialCommunityIcons name="refresh" size={24} color={COLORS.primary} />
             </TouchableOpacity>
-          )}
-        </Animated.View>
-        <DrawerItemList {...props} />
+
+            <Text style={styles.profileName}>
+              {isEditing ? "Edit Profile" : `${firstName} ${lastName}`}
+            </Text>
+
+            {isEditing ? (
+              <>
+                <View style={styles.inputContainer}>
+                  <MaterialCommunityIcons name="account" size={20} color={COLORS.secondary} />
+                  <TextInput
+                    style={styles.input}
+                    value={username}
+                    onChangeText={setUsername}
+                    placeholder="Username"
+                    placeholderTextColor={COLORS.secondary}
+                  />
+                </View>
+                <View style={styles.inputContainer}>
+                  <MaterialCommunityIcons name="account-outline" size={20} color={COLORS.secondary} />
+                  <TextInput
+                    style={styles.input}
+                    value={firstName}
+                    onChangeText={setFirstName}
+                    placeholder="First Name"
+                    placeholderTextColor={COLORS.secondary}
+                  />
+                </View>
+                <View style={styles.inputContainer}>
+                  <MaterialCommunityIcons name="account-outline" size={20} color={COLORS.secondary} />
+                  <TextInput
+                    style={styles.input}
+                    value={lastName}
+                    onChangeText={setLastName}
+                    placeholder="Last Name"
+                    placeholderTextColor={COLORS.secondary}
+                  />
+                </View>
+                <View style={styles.inputContainer}>
+                  <MaterialCommunityIcons name="text" size={20} color={COLORS.secondary} />
+                  <TextInput
+                    style={[styles.input, styles.bioInput]}
+                    value={bio}
+                    onChangeText={setBio}
+                    placeholder="Tell us about yourself"
+                    placeholderTextColor={COLORS.secondary}
+                    multiline
+                    maxLength={200}
+                  />
+                </View>
+                <TouchableOpacity
+                  style={[styles.updateButton, loading && styles.buttonDisabled]}
+                  onPress={updateProfile}
+                  disabled={loading}
+                  activeOpacity={0.7}
+                >
+                  {loading ? (
+                    <ActivityIndicator color={COLORS.white} />
+                  ) : (
+                    <Text style={styles.updateButtonText}>Save Changes</Text>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={() => { setIsEditing(false); debouncedFetchProfile(); }}
+                  disabled={loading}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <View style={styles.profileInfo}>
+                <View style={styles.infoRow}>
+                  <MaterialCommunityIcons name="account" size={20} color={COLORS.secondary} />
+                  <Text style={styles.profileText}>@{username}</Text>
+                </View>
+                <View style={styles.infoRow}>
+                  <MaterialCommunityIcons name="text" size={20} color={COLORS.secondary} />
+                  <Text style={styles.profileText}>{bio || "No bio yet"}</Text>
+                </View>
+                {lastSeen && (
+                  <View style={styles.infoRow}>
+                    <MaterialCommunityIcons name="clock-outline" size={20} color={COLORS.secondary} />
+                    <Text style={styles.profileText}>
+                      Last seen: {new Date(lastSeen).toLocaleTimeString()}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
+            {!isEditing && (
+              <TouchableOpacity style={styles.refreshButton} onPress={refreshProfile}>
+                <MaterialCommunityIcons name="refresh" size={24} color={COLORS.primary} />
+              </TouchableOpacity>
+            )}
+          </Animated.View>
+
+          {/* Enhanced DrawerItemList with background */}
+          <View style={styles.drawerItemsContainer}>
+            <DrawerItemList {...props} />
+          </View>
+        </LinearGradient>
       </DrawerContentScrollView>
       <CustomAlert
         visible={alert.visible}
         title={alert.title}
         message={alert.message}
-        onClose={alert.onClose 
-          ? () => { setAlert({ ...alert, visible: false }); alert.onClose(); } 
+        onClose={alert.onClose
+          ? () => { setAlert({ ...alert, visible: false }); alert.onClose(); }
           : () => setAlert({ ...alert, visible: false })}
       />
     </KeyboardAvoidingView>
@@ -445,139 +462,157 @@ export default function CustomDrawerContent(props) {
 }
 
 const styles = StyleSheet.create({
-  flexContainer: { flex: 1, backgroundColor: COLORS.background },
+  flexContainer: { flex: 1 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.background },
   loadingText: { marginTop: 12, color: COLORS.secondary, fontSize: 16, fontWeight: '500' },
-  profileContainer: { 
-    padding: 20, 
-    paddingTop: 40, 
-    alignItems: 'center', 
-    backgroundColor: COLORS.white, 
-    borderBottomWidth: 1, 
-    borderBottomColor: COLORS.border, 
+  gradientContainer: { flex: 1 },
+  profileContainer: {
+    padding: 20,
+    paddingTop: 40,
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
     position: 'relative',
   },
   imageContainer: { position: 'relative', marginBottom: 20 },
-  profileImage: { 
-    width: 110, 
-    height: 110, 
-    borderRadius: 55, 
-    borderWidth: 3, 
-    borderColor: COLORS.primary, 
+  profileImage: {
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+    borderWidth: 3,
+    borderColor: COLORS.primary,
     backgroundColor: COLORS.background,
   },
-  editIcon: { 
-    position: 'absolute', 
-    bottom: 0, 
-    right: 0, 
-    backgroundColor: COLORS.primary, 
-    borderRadius: 15, 
+  editIcon: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    backgroundColor: COLORS.primary,
+    borderRadius: 15,
     padding: 8,
   },
-  profileName: { 
-    fontSize: 26, 
-    fontWeight: '700', 
-    color: COLORS.text, 
-    marginBottom: 15, 
+  profileName: {
+    fontSize: 26,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: 15,
     letterSpacing: 0.5,
+    textShadowColor: COLORS.shadow,
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 2,
   },
   profileInfo: { width: '100%', paddingHorizontal: 10 },
   infoRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 10, paddingVertical: 5 },
-  profileText: { fontSize: 16, color: COLORS.text, marginLeft: 12, flex: 1, lineHeight: 22 },
-  inputContainer: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    width: '100%', 
-    marginVertical: 12, 
-    paddingHorizontal: 10 
+  profileText: {
+    fontSize: 16,
+    color: COLORS.text,
+    marginLeft: 12,
+    flex: 1,
+    lineHeight: 22,
+    textShadowColor: COLORS.shadow,
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 2,
   },
-  input: { 
-    flex: 1, 
-    height: 50, 
-    borderColor: COLORS.primary, 
-    borderWidth: 1.5, 
-    borderRadius: 12, 
-    paddingHorizontal: 15, 
-    backgroundColor: COLORS.white, 
-    fontSize: 16, 
-    color: COLORS.text, 
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    marginVertical: 12,
+    paddingHorizontal: 10,
+  },
+  input: {
+    flex: 1,
+    height: 50,
+    borderColor: COLORS.primary,
+    borderWidth: 1.5,
+    borderRadius: 12,
+    paddingHorizontal: 15,
+    backgroundColor: COLORS.white,
+    fontSize: 16,
+    color: COLORS.text,
     marginLeft: 10,
   },
-  bioInput: { 
-    height: 120, 
-    textAlignVertical: 'top', 
-    paddingTop: 10 
+  bioInput: {
+    height: 120,
+    textAlignVertical: 'top',
+    paddingTop: 10,
   },
-  updateButton: { 
-    marginTop: 20, 
-    backgroundColor: COLORS.primary, 
-    paddingVertical: 14, 
-    borderRadius: 12, 
-    width: '100%', 
+  updateButton: {
+    marginTop: 20,
+    backgroundColor: COLORS.primary,
+    paddingVertical: 14,
+    borderRadius: 12,
+    width: '100%',
     alignItems: 'center',
   },
-  buttonDisabled: { 
+  buttonDisabled: {
     backgroundColor: COLORS.disabled,
   },
-  updateButtonText: { 
-    color: COLORS.white, 
-    fontWeight: '600', 
-    fontSize: 16, 
-    letterSpacing: 0.5 
+  updateButtonText: {
+    color: COLORS.white,
+    fontWeight: '600',
+    fontSize: 16,
+    letterSpacing: 0.5,
   },
-  cancelButton: { 
-    marginTop: 10, 
-    paddingVertical: 12, 
-    width: '100%', 
-    alignItems: 'center', 
-    borderRadius: 12, 
-    borderWidth: 1, 
-    borderColor: COLORS.border 
+  cancelButton: {
+    marginTop: 10,
+    paddingVertical: 12,
+    width: '100%',
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
-  cancelButtonText: { 
-    color: COLORS.secondary, 
-    fontSize: 16, 
-    fontWeight: '500' 
+  cancelButtonText: {
+    color: COLORS.secondary,
+    fontSize: 16,
+    fontWeight: '500',
   },
-  refreshButton: { 
-    position: 'absolute', 
-    top: 20, 
-    right: 20 
+  refreshButton: {
+    position: 'absolute',
+    top: 20,
+    right: 20,
   },
-  alertOverlay: { 
-    flex: 1, 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    backgroundColor: 'rgba(0,0,0,0.6)' 
+  alertOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
   },
-  alertContainer: { 
-    backgroundColor: COLORS.white, 
-    padding: 25, 
-    borderRadius: 15, 
-    width: '85%', 
+  alertContainer: {
+    backgroundColor: COLORS.white,
+    padding: 25,
+    borderRadius: 15,
+    width: '85%',
     alignItems: 'center',
   },
-  alertTitle: { 
-    fontSize: 22, 
-    fontWeight: '700', 
-    color: COLORS.text, 
-    marginBottom: 10 
+  alertTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: 10,
   },
-  alertMessage: { 
-    fontSize: 16, 
-    color: COLORS.secondary, 
-    textAlign: 'center', 
-    marginBottom: 20 
+  alertMessage: {
+    fontSize: 16,
+    color: COLORS.secondary,
+    textAlign: 'center',
+    marginBottom: 20,
   },
-  alertButton: { 
-    backgroundColor: COLORS.primary, 
-    paddingVertical: 10, 
-    paddingHorizontal: 25, 
-    borderRadius: 10 
+  alertButton: {
+    backgroundColor: COLORS.primary,
+    paddingVertical: 10,
+    paddingHorizontal: 25,
+    borderRadius: 10,
   },
-  alertButtonText: { 
-    color: COLORS.white, 
-    fontSize: 16, 
-    fontWeight: '600' 
+  alertButtonText: {
+    color: COLORS.white,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  // New styles for drawer items
+  drawerItemsContainer: {
+    marginTop: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
   },
 });

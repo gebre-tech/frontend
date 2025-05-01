@@ -10,15 +10,16 @@ import {
   Animated,
   Pressable,
 } from 'react-native';
-import { useRoute, useNavigation } from '@react-navigation/native';
+import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import tw from 'twrnc';
 import { LinearGradient } from 'expo-linear-gradient';
 import Toast from 'react-native-toast-message';
-import { API_URL } from '../utils/constants';
+import { API_HOST, API_URL } from '../utils/constants';
 import { AuthContext } from '../../context/AuthContext';
+import debounce from 'lodash.debounce';
 
 const GroupChatScreen = () => {
   const { groupId, groupName } = useRoute().params;
@@ -26,61 +27,170 @@ const GroupChatScreen = () => {
   const navigation = useNavigation();
   const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [readMessages, setReadMessages] = useState(new Set());
   const ws = useRef(null);
   const flatListRef = useRef(null);
-  const [typingUser, setTypingUser] = useState(null); // Track typing user's name
+  const [typingUser, setTypingUser] = useState(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const pageSize = 20; // Number of messages per page
 
   const userRef = useRef(user);
   const markMessageAsReadRef = useRef(null);
 
-  const fetchMessages = async () => {
+  // Key for storing messages and queued messages in AsyncStorage
+  const storageKey = `group_messages_${groupId}`;
+  const queueKey = `queued_messages_${groupId}`;
+
+  // Load messages from AsyncStorage
+  const loadCachedMessages = async () => {
     try {
-      setLoading(true);
-      const token = await AsyncStorage.getItem('token');
-      if (!token) throw new Error('No authentication token found');
-      const response = await fetch(`${API_URL}/group/messages/${groupId}/`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await response.json();
-      setMessages(data || []);
+      const cachedMessages = await AsyncStorage.getItem(storageKey);
+      if (cachedMessages) {
+        const parsedMessages = JSON.parse(cachedMessages);
+        setMessages(parsedMessages);
+        return parsedMessages.length > 0;
+      }
+      return false;
     } catch (error) {
-      handleError(error);
+      console.error('Error loading cached messages:', error);
+      return false;
     } finally {
       setLoading(false);
     }
   };
 
+  // Save messages to AsyncStorage with cache management
+  const saveMessagesToStorage = async (msgs) => {
+    try {
+      // Limit to last 100 messages
+      const limitedMessages = msgs.slice(-100);
+      // Filter out messages older than 30 days
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const filteredMessages = limitedMessages.filter(
+        (msg) => new Date(msg.timestamp) >= thirtyDaysAgo
+      );
+      await AsyncStorage.setItem(storageKey, JSON.stringify(filteredMessages));
+    } catch (error) {
+      console.error('Error saving messages to storage:', error);
+    }
+  };
+
+  // Load queued messages from AsyncStorage
+  const loadQueuedMessages = async () => {
+    try {
+      const queued = await AsyncStorage.getItem(queueKey);
+      return queued ? JSON.parse(queued) : [];
+    } catch (error) {
+      console.error('Error loading queued messages:', error);
+      return [];
+    }
+  };
+
+  // Save queued messages to AsyncStorage
+  const saveQueuedMessages = async (queued) => {
+    try {
+      await AsyncStorage.setItem(queueKey, JSON.stringify(queued));
+    } catch (error) {
+      console.error('Error saving queued messages:', error);
+    }
+  };
+
+  // Fetch messages with pagination
+  const fetchMessages = async (pageNum = 1, reset = false) => {
+    try {
+      if (pageNum !== 1) setLoadingMore(true);
+      else setLoading(true);
+
+      const token = await AsyncStorage.getItem('token');
+      if (!token) throw new Error('No authentication token found');
+
+      const response = await fetch(
+        `${API_URL}/groups/messages/${groupId}/?page=${pageNum}&page_size=${pageSize}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP error ${response.status}`);
+      }
+
+      const data = await response.json();
+      const newMessages = data.results || [];
+      const hasNext = data.next; // Use boolean value from backend
+
+      setMessages((prev) => {
+        const existingIds = new Set(prev.map((msg) => msg.id));
+        const filteredMessages = newMessages.filter((msg) => !existingIds.has(msg.id));
+        const updatedMessages = reset
+          ? filteredMessages
+          : [...filteredMessages, ...prev].sort(
+              (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
+            );
+        saveMessagesToStorage(updatedMessages);
+        return updatedMessages;
+      });
+
+      setHasMore(hasNext);
+      if (hasNext) setPage(pageNum + 1);
+      else setPage(1); // Reset page if no more messages
+      return true;
+    } catch (error) {
+      handleError(error);
+      return false;
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  };
+
+  // Debounced fetchMessages
+  const debouncedFetchMessages = useCallback(
+    debounce((pageNum, reset) => fetchMessages(pageNum, reset), 500),
+    []
+  );
+
   const connectWebSocket = async () => {
     const token = await AsyncStorage.getItem('token');
     if (!token) return;
-    ws.current = new WebSocket(`ws://${API_URL.replace('http://', '')}/ws/group/${groupId}/?token=${token}`);
-    ws.current.onopen = () => console.log('Group WebSocket connected');
+
+    ws.current = new WebSocket(`ws://${API_HOST}/ws/groups/${groupId}/?token=${token}`);
+    ws.current.onopen = async () => {
+      console.log('Group WebSocket connected');
+      await syncQueuedMessages();
+    };
     ws.current.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
         if (data.type === 'group_message') {
           setMessages((prev) => {
             const messageIndex = prev.findIndex((msg) => msg.id === data.message.id);
+            let updatedMessages;
             if (messageIndex !== -1) {
-              const updatedMessages = [...prev];
+              updatedMessages = [...prev];
               updatedMessages[messageIndex] = data.message;
-              return updatedMessages;
             } else {
-              const newMessages = [...prev, data.message];
+              updatedMessages = [...prev, data.message].sort(
+                (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
+              );
               flatListRef.current?.scrollToEnd({ animated: true });
               Animated.timing(fadeAnim, {
                 toValue: 1,
                 duration: 300,
                 useNativeDriver: true,
               }).start();
-              return newMessages;
             }
+            saveMessagesToStorage(updatedMessages);
+            return updatedMessages;
           });
         } else if (data.type === 'typing') {
-          if (data.user_id !== user?.id) { // Don't show typing indicator for the current user
+          if (data.user_id !== user?.id) {
             setTypingUser(data.first_name);
             setTimeout(() => setTypingUser(null), 2000);
           }
@@ -98,13 +208,37 @@ const GroupChatScreen = () => {
     ws.current.onclose = () => console.log('Group WebSocket closed');
   };
 
+  // Sync queued messages when online
+  const syncQueuedMessages = async () => {
+    if (ws.current?.readyState !== WebSocket.OPEN) return;
+
+    const queuedMessages = await loadQueuedMessages();
+    if (queuedMessages.length === 0) return;
+
+    for (const msg of queuedMessages) {
+      ws.current.send(JSON.stringify({ type: 'group_message', message: msg.message }));
+    }
+
+    await saveQueuedMessages([]);
+  };
+
   const sendMessage = async () => {
     if (message.trim() === '') return;
+
     if (ws.current?.readyState === WebSocket.OPEN) {
       ws.current.send(JSON.stringify({ type: 'group_message', message }));
       setMessage('');
     } else {
-      handleError(new Error('WebSocket not connected'));
+      const queuedMessages = await loadQueuedMessages();
+      queuedMessages.push({ message, timestamp: new Date().toISOString() });
+      await saveQueuedMessages(queuedMessages);
+      Toast.show({
+        type: 'info',
+        text1: 'Offline',
+        text2: 'Message queued and will be sent when online',
+        position: 'bottom',
+      });
+      setMessage('');
     }
   };
 
@@ -132,7 +266,7 @@ const GroupChatScreen = () => {
         name: 'attachment.jpg',
         type: 'image/jpeg',
       });
-      await fetch(`${API_URL}/group/message/send/`, {
+      const response = await fetch(`${API_URL}/groups/message/send/`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -140,7 +274,11 @@ const GroupChatScreen = () => {
         },
         body: formData,
       });
-      fetchMessages();
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP error ${response.status}`);
+      }
+      debouncedFetchMessages(1, true);
     } catch (error) {
       handleError(error);
     }
@@ -202,35 +340,47 @@ const GroupChatScreen = () => {
     itemVisiblePercentThreshold: 50,
   };
 
-  useEffect(() => {
-    if (user) {
-      fetchMessages();
-      connectWebSocket();
+  // Handle infinite scrolling
+  const loadMoreMessages = useCallback(() => {
+    if (!loadingMore && hasMore) {
+      debouncedFetchMessages(page);
     }
-    return () => {
-      if (ws.current) {
-        ws.current.close();
-        console.log('Group WebSocket cleanup');
-      }
-    };
-  }, [user, groupId]);
+  }, [loadingMore, hasMore, page]);
+
+  // Load messages and manage WebSocket when screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      if (!user) return;
+
+      loadCachedMessages();
+      debouncedFetchMessages(1, true);
+      connectWebSocket();
+
+      return () => {
+        if (ws.current) {
+          ws.current.close();
+          console.log('Group WebSocket cleanup');
+        }
+      };
+    }, [user, groupId])
+  );
 
   const renderMessage = ({ item }) => {
-    const isCurrentUser = item.sender.id === user.id;
+    const isCurrentUser = item.sender?.id === user?.id;
     const reactions = item.reactions || {};
     const readBy = item.read_by || [];
+
+    const senderName = item.sender?.first_name || 'Unknown';
 
     return (
       <Animated.View style={{ opacity: fadeAnim }}>
         <Pressable
           style={tw`flex-row items-end mb-2 ${isCurrentUser ? 'self-end flex-row-reverse' : 'self-start'}`}
-          onLongPress={() => {
-            addReaction(item.id, '❤️');
-          }}
+          onLongPress={() => addReaction(item.id, '❤️')}
         >
           <View style={tw`relative`}>
             <Image
-              source={{ uri: `https://ui-avatars.com/api/?name=${item.sender.first_name}&background=random` }}
+              source={{ uri: `https://ui-avatars.com/api/?name=${senderName}&background=random` }}
               style={tw`w-10 h-10 rounded-full ${isCurrentUser ? 'ml-2' : 'mr-2'}`}
             />
             <View
@@ -244,9 +394,7 @@ const GroupChatScreen = () => {
             }`}
           >
             {!isCurrentUser && (
-              <Text style={tw`text-sm font-semibold text-gray-800`}>
-                {item.sender.first_name}
-              </Text>
+              <Text style={tw`text-sm font-semibold text-gray-800`}>{senderName}</Text>
             )}
             {item.message && (
               <Text style={tw`${isCurrentUser ? 'text-white' : 'text-gray-800'}`}>
@@ -261,7 +409,10 @@ const GroupChatScreen = () => {
             )}
             <View style={tw`flex-row items-center justify-end mt-1`}>
               <Text style={tw`text-xs ${isCurrentUser ? 'text-white' : 'text-gray-500'} mr-1`}>
-                {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {new Date(item.timestamp).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
               </Text>
               {isCurrentUser && (
                 <Ionicons
@@ -310,6 +461,10 @@ const GroupChatScreen = () => {
 
       {loading ? (
         <ActivityIndicator size="large" color="#007AFF" style={tw`flex-1 justify-center`} />
+      ) : messages.length === 0 ? (
+        <View style={tw`flex-1 justify-center items-center`}>
+          <Text style={tw`text-gray-500 text-lg`}>No messages yet</Text>
+        </View>
       ) : (
         <FlatList
           ref={flatListRef}
@@ -320,6 +475,13 @@ const GroupChatScreen = () => {
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={viewabilityConfig}
+          onEndReached={loadMoreMessages}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={
+            loadingMore ? (
+              <ActivityIndicator size="small" color="#007AFF" style={tw`my-4`} />
+            ) : null
+          }
         />
       )}
 

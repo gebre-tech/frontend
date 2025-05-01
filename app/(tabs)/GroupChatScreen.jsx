@@ -17,9 +17,10 @@ import * as ImagePicker from 'expo-image-picker';
 import tw from 'twrnc';
 import { LinearGradient } from 'expo-linear-gradient';
 import Toast from 'react-native-toast-message';
-import { API_HOST, API_URL } from '../utils/constants';
+import { API_HOST, API_URL, PLACEHOLDER_IMAGE } from '../utils/constants';
 import { AuthContext } from '../../context/AuthContext';
 import debounce from 'lodash.debounce';
+import axios from 'axios';
 
 const GroupChatScreen = () => {
   const { groupId, groupName } = useRoute().params;
@@ -36,6 +37,7 @@ const GroupChatScreen = () => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
+  const [senderProfiles, setSenderProfiles] = useState({}); // Store sender profiles
   const pageSize = 20; // Number of messages per page
 
   const userRef = useRef(user);
@@ -52,6 +54,7 @@ const GroupChatScreen = () => {
       if (cachedMessages) {
         const parsedMessages = JSON.parse(cachedMessages);
         setMessages(parsedMessages);
+        fetchSenderProfiles(parsedMessages); // Fetch profiles for cached messages
         return parsedMessages.length > 0;
       }
       return false;
@@ -100,6 +103,51 @@ const GroupChatScreen = () => {
     }
   };
 
+  // Fetch sender profiles
+  const fetchSenderProfiles = async (messages) => {
+    try {
+      const token = await AsyncStorage.getItem('token');
+      if (!token) {
+        console.error('No authentication token found for fetching profiles');
+        throw new Error('No authentication token found');
+      }
+
+      const uniqueSenders = [...new Set(messages.map((msg) => msg.sender?.id))].filter(Boolean);
+      const profiles = { ...senderProfiles };
+
+      for (const senderId of uniqueSenders) {
+        if (profiles[senderId]) continue; // Skip if already fetched
+
+        const sender = messages.find((msg) => msg.sender?.id === senderId)?.sender;
+        if (!sender?.username) {
+          console.warn(`Sender with ID ${senderId} has no username, skipping profile fetch`);
+          profiles[senderId] = null;
+          continue;
+        }
+
+        try {
+          console.log(`Fetching profile for username: ${sender.username}`);
+          const response = await axios.get(`${API_URL}/profiles/friend/${sender.username}/`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const profileData = response.data;
+          console.log(`Profile data for ${sender.username}:`, profileData);
+
+          const now = new Date();
+          const lastSeen = profileData.last_seen ? new Date(profileData.last_seen) : null;
+          profileData.is_online = lastSeen && (now - lastSeen) < 5 * 60 * 1000;
+          profiles[senderId] = profileData;
+        } catch (error) {
+          console.error(`Failed to fetch profile for ${sender.username}:`, error.response?.data || error.message);
+          profiles[senderId] = null; // Mark as not found
+        }
+      }
+      setSenderProfiles(profiles);
+    } catch (error) {
+      handleError(error);
+    }
+  };
+
   // Fetch messages with pagination
   const fetchMessages = async (pageNum = 1, reset = false) => {
     try {
@@ -134,6 +182,7 @@ const GroupChatScreen = () => {
               (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
             );
         saveMessagesToStorage(updatedMessages);
+        fetchSenderProfiles(updatedMessages); // Fetch profiles for senders
         return updatedMessages;
       });
 
@@ -162,7 +211,7 @@ const GroupChatScreen = () => {
 
     ws.current = new WebSocket(`ws://${API_HOST}/ws/groups/${groupId}/?token=${token}`);
     ws.current.onopen = async () => {
-      console.log('Group WebSocket connected');
+      console.log('Groups WebSocket connected');
       await syncQueuedMessages();
     };
     ws.current.onmessage = (e) => {
@@ -187,6 +236,7 @@ const GroupChatScreen = () => {
               }).start();
             }
             saveMessagesToStorage(updatedMessages);
+            fetchSenderProfiles(updatedMessages); // Fetch profiles for new messages
             return updatedMessages;
           });
         } else if (data.type === 'typing') {
@@ -205,7 +255,7 @@ const GroupChatScreen = () => {
       console.error('WebSocket error:', error);
       setTimeout(connectWebSocket, 2000);
     };
-    ws.current.onclose = () => console.log('Group WebSocket closed');
+    ws.current.onclose = () => console.log('Groups WebSocket closed');
   };
 
   // Sync queued messages when online
@@ -359,7 +409,7 @@ const GroupChatScreen = () => {
       return () => {
         if (ws.current) {
           ws.current.close();
-          console.log('Group WebSocket cleanup');
+          console.log('Groups WebSocket cleanup');
         }
       };
     }, [user, groupId])
@@ -369,8 +419,10 @@ const GroupChatScreen = () => {
     const isCurrentUser = item.sender?.id === user?.id;
     const reactions = item.reactions || {};
     const readBy = item.read_by || [];
+    const senderProfile = senderProfiles[item.sender?.id]; // Get sender's profile
 
-    const senderName = item.sender?.first_name || 'Unknown';
+    const senderName = senderProfile?.user?.first_name || item.sender?.first_name || 'Unknown';
+    const senderUsername = item.sender?.username;
 
     return (
       <Animated.View style={{ opacity: fadeAnim }}>
@@ -378,15 +430,35 @@ const GroupChatScreen = () => {
           style={tw`flex-row items-end mb-2 ${isCurrentUser ? 'self-end flex-row-reverse' : 'self-start'}`}
           onLongPress={() => addReaction(item.id, '❤️')}
         >
-          <View style={tw`relative`}>
-            <Image
-              source={{ uri: `https://ui-avatars.com/api/?name=${senderName}&background=random` }}
-              style={tw`w-10 h-10 rounded-full ${isCurrentUser ? 'ml-2' : 'mr-2'}`}
-            />
-            <View
-              style={tw`absolute bottom-0 right-0 w-4 h-4 rounded-full border-2 border-white bg-green-500 ${isCurrentUser ? 'right-2' : 'right-0'}`}
-            />
-          </View>
+          <TouchableOpacity
+            onPress={() => {
+              if (senderUsername) {
+                navigation.navigate('FriendProfile', { username: senderUsername });
+              } else {
+                Toast.show({
+                  type: 'error',
+                  text1: 'Error',
+                  text2: 'User profile unavailable',
+                  position: 'bottom',
+                });
+              }
+            }}
+          >
+            <View style={tw`relative`}>
+              <Image
+                source={{
+                  uri: senderProfile?.profile_picture || PLACEHOLDER_IMAGE || `https://ui-avatars.com/api/?name=${senderName}&background=random`,
+                }}
+                style={tw`w-10 h-10 rounded-full ${isCurrentUser ? 'ml-2' : 'mr-2'}`}
+                onError={() => console.log(`Failed to load profile picture for ${senderName}`)}
+              />
+              <View
+                style={tw`absolute bottom-0 right-0 w-4 h-4 rounded-full border-2 border-white ${
+                  senderProfile?.is_online ? 'bg-green-500' : 'bg-gray-500'
+                } ${isCurrentUser ? 'right-2' : 'right-0'}`}
+              />
+            </View>
+          </TouchableOpacity>
 
           <View
             style={tw`relative max-w-3/4 p-3 rounded-2xl shadow-sm ${

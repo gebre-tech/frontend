@@ -5,7 +5,7 @@ import CreateGroupScreen from './CreateGroupScreen';
 import GroupChatScreen from './GroupChatScreen';
 import GroupInfo from './GroupInfo';
 import React from 'react';
-
+import FriendProfile from './FriendProfile';
 
 const Stack = createStackNavigator();
 
@@ -21,6 +21,8 @@ const GroupsNavigator = () => {
       <Stack.Screen name="CreateGroupScreen" component={CreateGroupScreen} />
       <Stack.Screen name="GroupChatScreen" component={GroupChatScreen} />
       <Stack.Screen name="GroupInfo" component={GroupInfo} />
+      <Stack.Screen name="FriendProfile" component={FriendProfile} />
+
     </Stack.Navigator>
   );
 };

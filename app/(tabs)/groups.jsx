@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,22 +6,29 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   TextInput,
+  Image,
 } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import tw from 'twrnc';
 import { LinearGradient } from 'expo-linear-gradient';
 import Toast from 'react-native-toast-message';
-import { API_URL } from '../utils/constants';
+import { API_HOST, API_URL } from '../utils/constants';
+import { AuthContext } from '../../context/AuthContext';
 
 const Groups = () => {
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
+  const [lastMessages, setLastMessages] = useState({}); // Store last message for each group
+  const [unreadMessages, setUnreadMessages] = useState({}); // Store unread message status for each group
   const navigation = useNavigation();
+  const { user } = useContext(AuthContext);
+  const ws = useRef(null);
 
+  // Fetch groups
   const fetchGroups = useCallback(async () => {
     try {
       setLoading(true);
@@ -30,14 +37,49 @@ const Groups = () => {
       const response = await axios.get(`${API_URL}/groups/list/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setGroups(response.data || []);
+      const groupData = response.data || [];
+      setGroups(groupData);
+
+      // Fetch the last message and unread status for each group
+      const lastMessagesData = {};
+      const unreadMessagesData = {};
+      for (const group of groupData) {
+        const lastMessage = await fetchLastMessage(group.id, token);
+        lastMessagesData[group.id] = lastMessage;
+        // Check if the last message is unread by the current user
+        if (lastMessage && user) {
+          const readBy = lastMessage.read_by || [];
+          const isUnread = !readBy.some((u) => u.id === user.id);
+          unreadMessagesData[group.id] = isUnread;
+        } else {
+          unreadMessagesData[group.id] = false;
+        }
+      }
+      setLastMessages(lastMessagesData);
+      setUnreadMessages(unreadMessagesData);
     } catch (error) {
       handleError(error);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user]);
 
+  // Fetch the last message for a specific group
+  const fetchLastMessage = async (groupId, token) => {
+    try {
+      const response = await axios.get(`${API_URL}/groups/messages/${groupId}/`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { page: 1, page_size: 1 }, // Fetch only the most recent message
+      });
+      const messages = response.data.results || [];
+      return messages.length > 0 ? messages[0] : null;
+    } catch (error) {
+      console.error(`Error fetching last message for group ${groupId}:`, error);
+      return null;
+    }
+  };
+
+  // Search groups
   const searchGroups = useCallback(async (query) => {
     if (!query) return fetchGroups();
     try {
@@ -48,13 +90,73 @@ const Groups = () => {
         headers: { Authorization: `Bearer ${token}` },
         params: { query },
       });
-      setGroups(response.data || []);
+      const groupData = response.data || [];
+      setGroups(groupData);
+
+      // Fetch last messages and unread status for filtered groups
+      const lastMessagesData = {};
+      const unreadMessagesData = {};
+      for (const group of groupData) {
+        const lastMessage = await fetchLastMessage(group.id, token);
+        lastMessagesData[group.id] = lastMessage;
+        if (lastMessage && user) {
+          const readBy = lastMessage.read_by || [];
+          const isUnread = !readBy.some((u) => u.id === user.id);
+          unreadMessagesData[group.id] = isUnread;
+        } else {
+          unreadMessagesData[group.id] = false;
+        }
+      }
+      setLastMessages(lastMessagesData);
+      setUnreadMessages(unreadMessagesData);
     } catch (error) {
       handleError(error);
     } finally {
       setLoading(false);
     }
-  }, [fetchGroups]);
+  }, [fetchGroups, user]);
+
+  // Connect to WebSocket for real-time updates
+  const connectWebSocket = async () => {
+    const token = await AsyncStorage.getItem('token');
+    if (!token) return;
+
+    // Connect to a global WebSocket endpoint for all groups
+    ws.current = new WebSocket(`ws://${API_HOST}/ws/global_groups/?token=${token}`);
+    ws.current.onopen = () => {
+      console.log('Global Groups WebSocket connected');
+    };
+    ws.current.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'group_message') {
+          const message = data.message;
+          const groupId = message.group_id;
+          // Update the last message for the group
+          setLastMessages((prev) => ({
+            ...prev,
+            [groupId]: message,
+          }));
+          // Update unread status
+          if (user) {
+            const readBy = message.read_by || [];
+            const isUnread = !readBy.some((u) => u.id === user.id);
+            setUnreadMessages((prev) => ({
+              ...prev,
+              [groupId]: isUnread,
+            }));
+          }
+        }
+      } catch (error) {
+        console.error('WebSocket message parsing error:', error);
+      }
+    };
+    ws.current.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      setTimeout(connectWebSocket, 2000);
+    };
+    ws.current.onclose = () => console.log('Global Groups WebSocket closed');
+  };
 
   const handleError = (error) => {
     console.error('Error:', error);
@@ -74,23 +176,92 @@ const Groups = () => {
     searchGroups(searchText);
   }, [searchText, searchGroups]);
 
-  const renderItem = ({ item }) => (
-    <TouchableOpacity
-      style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-md border border-gray-100`}
-      onPress={() => navigation.navigate('GroupChatScreen', { groupId: item.id, groupName: item.name })}
-    >
-      <View style={tw`w-12 h-12 rounded-full bg-blue-500 flex items-center justify-center mr-3`}>
-        <Text style={tw`text-white text-lg font-bold`}>{item.name[0]}</Text>
-      </View>
-      <View style={tw`flex-1`}>
-        <Text style={tw`text-lg font-semibold text-gray-800`}>{item.name}</Text>
-        <Text style={tw`text-sm text-gray-500`}>Admin: {item.admin.first_name}</Text>
-      </View>
-      <TouchableOpacity onPress={() => navigation.navigate('GroupInfo', { groupId: item.id })}>
-        <Ionicons name="information-circle-outline" size={24} color="#007AFF" />
-      </TouchableOpacity>
-    </TouchableOpacity>
+  // Manage WebSocket connection when the screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      if (!user) return;
+
+      fetchGroups();
+      connectWebSocket();
+
+      return () => {
+        if (ws.current) {
+          ws.current.close();
+          console.log('Global Groups WebSocket cleanup');
+        }
+      };
+    }, [user, fetchGroups])
   );
+
+  const renderItem = ({ item }) => {
+    const lastMessage = lastMessages[item.id];
+    const isUnread = unreadMessages[item.id];
+
+    // Determine the sender name for the preview
+    let senderName = 'Unknown';
+    if (lastMessage) {
+      senderName = lastMessage.sender?.id === user?.id ? 'You' : lastMessage.sender?.first_name || 'Unknown';
+    }
+
+    // Determine the message preview content
+    let messagePreview = 'No messages yet';
+    if (lastMessage) {
+      if (lastMessage.message) {
+        messagePreview = lastMessage.message;
+      } else if (lastMessage.attachment) {
+        // Basic attachment type detection based on file extension
+        const attachmentUrl = lastMessage.attachment.toLowerCase();
+        if (attachmentUrl.endsWith('.jpg') || attachmentUrl.endsWith('.png') || attachmentUrl.endsWith('.jpeg')) {
+          messagePreview = 'Sent a photo';
+        } else if (attachmentUrl.endsWith('.mp4') || attachmentUrl.endsWith('.mov')) {
+          messagePreview = 'Sent a video';
+        } else {
+          messagePreview = 'Sent an attachment';
+        }
+      }
+    }
+
+    return (
+      <TouchableOpacity
+        style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-md border border-gray-100`}
+        onPress={() => navigation.navigate('GroupChatScreen', { groupId: item.id, groupName: item.name })}
+      >
+        {item.profile_picture ? (
+          <Image
+            source={{ uri: `${API_URL}${item.profile_picture}` }}
+            style={tw`w-12 h-12 rounded-full mr-3`}
+            onError={() => console.log(`Failed to load profile picture for group ${item.name}`)}
+          />
+        ) : (
+          <View style={tw`w-12 h-12 rounded-full bg-blue-500 flex items-center justify-center mr-3`}>
+            <Text style={tw`text-white text-lg font-bold`}>{item.name[0]}</Text>
+          </View>
+        )}
+        <View style={tw`flex-1 flex-row items-center justify-between`}>
+          <View style={tw`flex-1`}>
+            <Text style={tw`text-lg font-semibold text-gray-800`}>{item.name}</Text>
+            {lastMessage ? (
+              <Text style={tw`text-sm text-gray-500`} numberOfLines={1}>
+                {senderName}: {messagePreview}
+              </Text>
+            ) : (
+              <Text style={tw`text-sm text-gray-500`}>No messages yet</Text>
+            )}
+          </View>
+          <View style={tw`items-end`}>
+            {lastMessage && (
+              <Text style={tw`text-xs text-gray-500 mb-1`}>
+                {new Date(lastMessage.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            )}
+            {isUnread && (
+              <View style={tw`w-3 h-3 rounded-full bg-blue-500`} />
+            )}
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <View style={tw`flex-1 bg-gray-100`}>

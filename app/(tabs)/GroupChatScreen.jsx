@@ -37,13 +37,12 @@ const GroupChatScreen = () => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
-  const [senderProfiles, setSenderProfiles] = useState({}); // Store sender profiles
-  const pageSize = 20; // Number of messages per page
+  const [senderProfiles, setSenderProfiles] = useState({});
+  const pageSize = 20;
 
   const userRef = useRef(user);
   const markMessageAsReadRef = useRef(null);
 
-  // Key for storing messages and queued messages in AsyncStorage
   const storageKey = `group_messages_${groupId}`;
   const queueKey = `queued_messages_${groupId}`;
 
@@ -54,7 +53,7 @@ const GroupChatScreen = () => {
       if (cachedMessages) {
         const parsedMessages = JSON.parse(cachedMessages);
         setMessages(parsedMessages);
-        fetchSenderProfiles(parsedMessages); // Fetch profiles for cached messages
+        fetchSenderProfiles(parsedMessages);
         return parsedMessages.length > 0;
       }
       return false;
@@ -69,9 +68,7 @@ const GroupChatScreen = () => {
   // Save messages to AsyncStorage with cache management
   const saveMessagesToStorage = async (msgs) => {
     try {
-      // Limit to last 100 messages
       const limitedMessages = msgs.slice(-100);
-      // Filter out messages older than 30 days
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
       const filteredMessages = limitedMessages.filter(
@@ -116,7 +113,7 @@ const GroupChatScreen = () => {
       const profiles = { ...senderProfiles };
 
       for (const senderId of uniqueSenders) {
-        if (profiles[senderId]) continue; // Skip if already fetched
+        if (profiles[senderId]) continue;
 
         const sender = messages.find((msg) => msg.sender?.id === senderId)?.sender;
         if (!sender?.username) {
@@ -139,7 +136,7 @@ const GroupChatScreen = () => {
           profiles[senderId] = profileData;
         } catch (error) {
           console.error(`Failed to fetch profile for ${sender.username}:`, error.response?.data || error.message);
-          profiles[senderId] = null; // Mark as not found
+          profiles[senderId] = null;
         }
       }
       setSenderProfiles(profiles);
@@ -171,7 +168,7 @@ const GroupChatScreen = () => {
 
       const data = await response.json();
       const newMessages = data.results || [];
-      const hasNext = data.next; // Use boolean value from backend
+      const hasNext = data.next;
 
       setMessages((prev) => {
         const existingIds = new Set(prev.map((msg) => msg.id));
@@ -182,13 +179,13 @@ const GroupChatScreen = () => {
               (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
             );
         saveMessagesToStorage(updatedMessages);
-        fetchSenderProfiles(updatedMessages); // Fetch profiles for senders
+        fetchSenderProfiles(updatedMessages);
         return updatedMessages;
       });
 
       setHasMore(hasNext);
       if (hasNext) setPage(pageNum + 1);
-      else setPage(1); // Reset page if no more messages
+      else setPage(1);
       return true;
     } catch (error) {
       handleError(error);
@@ -236,7 +233,7 @@ const GroupChatScreen = () => {
               }).start();
             }
             saveMessagesToStorage(updatedMessages);
-            fetchSenderProfiles(updatedMessages); // Fetch profiles for new messages
+            fetchSenderProfiles(updatedMessages);
             return updatedMessages;
           });
         } else if (data.type === 'typing') {
@@ -266,7 +263,11 @@ const GroupChatScreen = () => {
     if (queuedMessages.length === 0) return;
 
     for (const msg of queuedMessages) {
-      ws.current.send(JSON.stringify({ type: 'group_message', message: msg.message }));
+      ws.current.send(JSON.stringify({
+        type: 'group_message',
+        message: msg.message,
+        group_id: groupId
+      }));
     }
 
     await saveQueuedMessages([]);
@@ -276,7 +277,11 @@ const GroupChatScreen = () => {
     if (message.trim() === '') return;
 
     if (ws.current?.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify({ type: 'group_message', message }));
+      ws.current.send(JSON.stringify({
+        type: 'group_message',
+        message,
+        group_id: groupId
+      }));
       setMessage('');
     } else {
       const queuedMessages = await loadQueuedMessages();
@@ -358,7 +363,7 @@ const GroupChatScreen = () => {
 
   const sendTyping = () => {
     if (ws.current?.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify({ type: 'typing' }));
+      ws.current.send(JSON.stringify({ type: 'typing', group_id: groupId }));
     }
   };
 
@@ -390,14 +395,12 @@ const GroupChatScreen = () => {
     itemVisiblePercentThreshold: 50,
   };
 
-  // Handle infinite scrolling
   const loadMoreMessages = useCallback(() => {
     if (!loadingMore && hasMore) {
       debouncedFetchMessages(page);
     }
   }, [loadingMore, hasMore, page]);
 
-  // Load messages and manage WebSocket when screen is focused
   useFocusEffect(
     useCallback(() => {
       if (!user) return;
@@ -419,7 +422,7 @@ const GroupChatScreen = () => {
     const isCurrentUser = item.sender?.id === user?.id;
     const reactions = item.reactions || {};
     const readBy = item.read_by || [];
-    const senderProfile = senderProfiles[item.sender?.id]; // Get sender's profile
+    const senderProfile = senderProfiles[item.sender?.id];
 
     const senderName = senderProfile?.user?.first_name || item.sender?.first_name || 'Unknown';
     const senderUsername = item.sender?.username;

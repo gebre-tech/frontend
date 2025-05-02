@@ -46,7 +46,6 @@ const Groups = () => {
       for (const group of groupData) {
         const lastMessage = await fetchLastMessage(group.id, token);
         lastMessagesData[group.id] = lastMessage;
-        // Check if the last message is unread by the current user
         if (lastMessage && user) {
           const readBy = lastMessage.read_by || [];
           const isUnread = !readBy.some((u) => u.id === user.id);
@@ -69,7 +68,7 @@ const Groups = () => {
     try {
       const response = await axios.get(`${API_URL}/groups/messages/${groupId}/`, {
         headers: { Authorization: `Bearer ${token}` },
-        params: { page: 1, page_size: 1 }, // Fetch only the most recent message
+        params: { page: 1, page_size: 1 },
       });
       const messages = response.data.results || [];
       return messages.length > 0 ? messages[0] : null;
@@ -93,7 +92,6 @@ const Groups = () => {
       const groupData = response.data || [];
       setGroups(groupData);
 
-      // Fetch last messages and unread status for filtered groups
       const lastMessagesData = {};
       const unreadMessagesData = {};
       for (const group of groupData) {
@@ -121,10 +119,9 @@ const Groups = () => {
     const token = await AsyncStorage.getItem('token');
     if (!token) return;
 
-    // Connect to a global WebSocket endpoint for all groups
-    ws.current = new WebSocket(`ws://${API_HOST}/ws/global_groups/?token=${token}`);
+    ws.current = new WebSocket(`ws://${API_HOST}/ws/groups/?token=${token}`);
     ws.current.onopen = () => {
-      console.log('Global Groups WebSocket connected');
+      console.log('Groups WebSocket connected');
     };
     ws.current.onmessage = (e) => {
       try {
@@ -132,12 +129,10 @@ const Groups = () => {
         if (data.type === 'group_message') {
           const message = data.message;
           const groupId = message.group_id;
-          // Update the last message for the group
           setLastMessages((prev) => ({
             ...prev,
             [groupId]: message,
           }));
-          // Update unread status
           if (user) {
             const readBy = message.read_by || [];
             const isUnread = !readBy.some((u) => u.id === user.id);
@@ -155,7 +150,7 @@ const Groups = () => {
       console.error('WebSocket error:', error);
       setTimeout(connectWebSocket, 2000);
     };
-    ws.current.onclose = () => console.log('Global Groups WebSocket closed');
+    ws.current.onclose = () => console.log('Groups WebSocket closed');
   };
 
   const handleError = (error) => {
@@ -176,7 +171,6 @@ const Groups = () => {
     searchGroups(searchText);
   }, [searchText, searchGroups]);
 
-  // Manage WebSocket connection when the screen is focused
   useFocusEffect(
     useCallback(() => {
       if (!user) return;
@@ -187,7 +181,7 @@ const Groups = () => {
       return () => {
         if (ws.current) {
           ws.current.close();
-          console.log('Global Groups WebSocket cleanup');
+          console.log('Groups WebSocket cleanup');
         }
       };
     }, [user, fetchGroups])
@@ -197,19 +191,16 @@ const Groups = () => {
     const lastMessage = lastMessages[item.id];
     const isUnread = unreadMessages[item.id];
 
-    // Determine the sender name for the preview
     let senderName = 'Unknown';
     if (lastMessage) {
       senderName = lastMessage.sender?.id === user?.id ? 'You' : lastMessage.sender?.first_name || 'Unknown';
     }
 
-    // Determine the message preview content
     let messagePreview = 'No messages yet';
     if (lastMessage) {
       if (lastMessage.message) {
         messagePreview = lastMessage.message;
       } else if (lastMessage.attachment) {
-        // Basic attachment type detection based on file extension
         const attachmentUrl = lastMessage.attachment.toLowerCase();
         if (attachmentUrl.endsWith('.jpg') || attachmentUrl.endsWith('.png') || attachmentUrl.endsWith('.jpeg')) {
           messagePreview = 'Sent a photo';
@@ -265,7 +256,6 @@ const Groups = () => {
 
   return (
     <View style={tw`flex-1 bg-gray-100`}>
-      {/* Gradient Header */}
       <LinearGradient
         colors={['#4A00E0', '#8E2DE2']}
         style={tw`p-4 pt-10 flex-row items-center justify-between shadow-md`}
@@ -279,7 +269,6 @@ const Groups = () => {
         </TouchableOpacity>
       </LinearGradient>
 
-      {/* Search Bar */}
       <View style={tw`p-4`}>
         <TextInput
           style={tw`bg-white rounded-full px-4 py-3 text-gray-800 border border-gray-200 shadow-md`}
@@ -291,7 +280,6 @@ const Groups = () => {
         />
       </View>
 
-      {/* Groups List */}
       {loading ? (
         <ActivityIndicator size="large" color="#007AFF" style={tw`flex-1 justify-center`} />
       ) : (

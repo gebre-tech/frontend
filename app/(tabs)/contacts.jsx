@@ -9,6 +9,7 @@ import {
   TextInput,
   Alert,
   Image,
+  Pressable, // Added for long press
 } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -20,18 +21,15 @@ import tw from 'twrnc';
 import { AuthContext } from '../../context/AuthContext';
 import { API_URL, API_HOST, PLACEHOLDER_IMAGE } from '../utils/constants';
 import ChatScreen from './chatScreen';
+import FriendProfile from './FriendProfile';
 
-// Assuming FriendProfile exists in your app
-import FriendProfile from './FriendProfile'; // Adjust the path as needed
-
-// Define the Stack Navigator
 const Stack = createStackNavigator();
 
-// The Contacts list UI and logic
 const ContactsScreen = ({ navigation }) => {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
+  const [selectedContactId, setSelectedContactId] = useState(null); // Track the selected contact for showing the remove icon
   const parentNavigation = useNavigation();
   const { user, logout } = React.useContext(AuthContext);
   const [ws, setWs] = useState(null);
@@ -117,10 +115,12 @@ const ContactsScreen = ({ navigation }) => {
         headers: { Authorization: `Bearer ${token}` },
       });
       setContacts((prev) => prev.filter((contact) => contact.friend_id !== friendId));
+      setSelectedContactId(null); // Reset the selected contact after removal
       Alert.alert('Success', 'Friend removed successfully');
     } catch (error) {
       if (error.response?.status === 404) {
         setContacts((prev) => prev.filter((contact) => contact.friend_id !== friendId));
+        setSelectedContactId(null);
         Alert.alert('Info', 'Friend was already removed');
       } else {
         handleError(error);
@@ -213,10 +213,24 @@ const ContactsScreen = ({ navigation }) => {
       item.is_online ||
       (item.friend.last_seen && new Date() - new Date(item.friend.last_seen) < 5 * 60 * 1000);
 
+    const isSelected = selectedContactId === item.friend_id; // Check if this contact is selected
+
     return (
-      <TouchableOpacity
-        style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-sm border-b border-gray-100`}
-        onPress={() => startChat(item.friend_id, item.friend.user.username)}
+      <Pressable
+        style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-sm border-b border-gray-100 ${
+          isSelected ? 'bg-red-50' : '' // Highlight the row when selected
+        }`}
+        onPress={() => {
+          if (isSelected) {
+            setSelectedContactId(null); // Deselect if already selected
+          } else {
+            startChat(item.friend_id, item.friend.user.username); // Start chat on normal press
+          }
+        }}
+        onLongPress={() => {
+          setSelectedContactId(item.friend_id); // Show remove icon on long press
+        }}
+        delayLongPress={300} // Adjust the long press delay (in milliseconds)
       >
         <TouchableOpacity
           style={tw`relative`}
@@ -248,10 +262,15 @@ const ContactsScreen = ({ navigation }) => {
                 }`}
           </Text>
         </View>
-        <TouchableOpacity onPress={() => removeFriend(item.friend_id)}>
-          <Ionicons name="trash-outline" size={24} color="#EF4444" />
-        </TouchableOpacity>
-      </TouchableOpacity>
+        {isSelected && (
+          <TouchableOpacity
+            onPress={() => removeFriend(item.friend_id)}
+            style={tw`p-2`} // Add some padding for better touch area
+          >
+            <Ionicons name="trash-outline" size={24} color="#EF4444" />
+          </TouchableOpacity>
+        )}
+      </Pressable>
     );
   };
 
@@ -300,7 +319,6 @@ const ContactsScreen = ({ navigation }) => {
   );
 };
 
-// Main Contacts component with stack navigator
 const Contacts = () => {
   return (
     <Stack.Navigator

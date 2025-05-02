@@ -1,48 +1,58 @@
-// app/(auth)/Login.jsx
-import React, { useState, useContext } from "react";
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Alert } from "react-native";
-import { AuthContext } from "../../context/AuthContext";
-import axios from "axios";
-import { API_URL } from "../utils/constants";
+import React, { useState, useContext } from 'react';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Alert } from 'react-native';
+import { AuthContext } from '../../context/AuthContext';
+import axios from 'axios';
+import { API_URL } from '../utils/constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const Login = ({ navigation }) => {
   const { login, loading, error, keys } = useContext(AuthContext);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [forgotModalVisible, setForgotModalVisible] = useState(false);
-  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotEmail, setForgotEmail] = useState('');
   const [forgotLoading, setForgotLoading] = useState(false);
 
   const handleLogin = async () => {
-    if (!email || !password) {
-      Alert.alert("Error", "Please enter your email and password.");
+    const trimmedEmail = email.trim().toLowerCase(); // Normalize email
+    if (!trimmedEmail || !password) {
+      Alert.alert('Error', 'Please enter your email and password.');
       return;
     }
 
-    const success = await login(email, password);
+    const success = await login(trimmedEmail, password);
     if (success) {
-      if (!keys.publicKey || !keys.privateKey) {
-        Alert.alert("Warning", "Keys not found on this device. You may need to transfer your private key.");
+      const [privateKey, publicKey] = await Promise.all([
+        AsyncStorage.getItem(`private_key_${trimmedEmail}`),
+        AsyncStorage.getItem(`public_key_${trimmedEmail}`),
+      ]);
+
+      if (!publicKey || !privateKey) {
+        Alert.alert('Warning', 'Keys not found on this device. You may need to transfer your private key.');
+      } else {
+        console.log('Retrieved Public Key:', publicKey);
+        console.log('Retrieved Private Key:', privateKey);
       }
-      navigation.reset({ index: 0, routes: [{ name: "Home" }] });
+
+      navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
     }
   };
 
   const handleForgotPassword = async () => {
     if (!forgotEmail) {
-      Alert.alert("Error", "Please enter your email.");
+      Alert.alert('Error', 'Please enter your email.');
       return;
     }
 
     setForgotLoading(true);
     try {
       const response = await axios.post(`${API_URL}/auth/forgot-password/`, { email: forgotEmail });
-      Alert.alert("Success", response.data.message);
+      Alert.alert('Success', response.data.message);
       setForgotModalVisible(false);
-      setForgotEmail("");
+      setForgotEmail('');
     } catch (error) {
-      const errorMessage = error.response?.data?.error || "Failed to send reset email.";
-      Alert.alert("Error", errorMessage);
+      const errorMessage = error.response?.data?.error || 'Failed to send reset email.';
+      Alert.alert('Error', errorMessage);
     } finally {
       setForgotLoading(false);
     }
@@ -54,15 +64,15 @@ const Login = ({ navigation }) => {
       {error && <Text style={styles.error}>{error}</Text>}
       <TextInput
         style={styles.input}
-        placeholder="Email"
+        placeholder='Email'
         value={email}
         onChangeText={setEmail}
-        keyboardType="email-address"
-        autoCapitalize="none"
+        keyboardType='email-address'
+        autoCapitalize='none'
       />
       <TextInput
         style={styles.input}
-        placeholder="Password"
+        placeholder='Password'
         value={password}
         onChangeText={setPassword}
         secureTextEntry
@@ -73,7 +83,7 @@ const Login = ({ navigation }) => {
         disabled={loading}
       >
         {loading ? (
-          <ActivityIndicator color="#fff" />
+          <ActivityIndicator color='#fff' />
         ) : (
           <Text style={styles.buttonText}>Login</Text>
         )}
@@ -81,21 +91,21 @@ const Login = ({ navigation }) => {
       <TouchableOpacity onPress={() => setForgotModalVisible(true)}>
         <Text style={styles.link}>Forgot Password?</Text>
       </TouchableOpacity>
-      <TouchableOpacity onPress={() => navigation.navigate("Signup")}>
+      <TouchableOpacity onPress={() => navigation.navigate('Signup')}>
         <Text style={styles.link}>Create an account</Text>
       </TouchableOpacity>
 
-      <Modal visible={forgotModalVisible} animationType="slide" transparent>
+      <Modal visible={forgotModalVisible} animationType='slide' transparent>
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Reset Password</Text>
             <TextInput
               style={styles.input}
-              placeholder="Enter your email"
+              placeholder='Enter your email'
               value={forgotEmail}
               onChangeText={setForgotEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
+              keyboardType='email-address'
+              autoCapitalize='none'
             />
             <TouchableOpacity
               style={[styles.button, forgotLoading && styles.buttonDisabled]}
@@ -103,7 +113,7 @@ const Login = ({ navigation }) => {
               disabled={forgotLoading}
             >
               {forgotLoading ? (
-                <ActivityIndicator color="#fff" />
+                <ActivityIndicator color='#fff' />
               ) : (
                 <Text style={styles.buttonText}>Send Reset Email</Text>
               )}
@@ -119,17 +129,17 @@ const Login = ({ navigation }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: "center", padding: 20, backgroundColor: "#f5f5f5" },
-  title: { fontSize: 32, fontWeight: "bold", color: "#333", marginBottom: 30, textAlign: "center" },
-  input: { backgroundColor: "#fff", borderRadius: 8, padding: 15, marginBottom: 15, borderWidth: 1, borderColor: "#ddd" },
-  button: { backgroundColor: "#007AFF", padding: 15, borderRadius: 8, alignItems: "center" },
-  buttonDisabled: { backgroundColor: "#99ccff" },
-  buttonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
-  error: { color: "#ff4d4d", marginBottom: 15, textAlign: "center" },
-  link: { color: "#007AFF", textAlign: "center", marginTop: 20, fontSize: 16 },
-  modalContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(0,0,0,0.5)" },
-  modalContent: { backgroundColor: "#fff", padding: 20, borderRadius: 10, width: "80%", alignItems: "center" },
-  modalTitle: { fontSize: 24, fontWeight: "bold", marginBottom: 20, color: "#333" },
+  container: { flex: 1, justifyContent: 'center', padding: 20, backgroundColor: '#f5f5f5' },
+  title: { fontSize: 32, fontWeight: 'bold', color: '#333', marginBottom: 30, textAlign: 'center' },
+  input: { backgroundColor: '#fff', borderRadius: 8, padding: 15, marginBottom: 15, borderWidth: 1, borderColor: '#ddd' },
+  button: { backgroundColor: '#007AFF', padding: 15, borderRadius: 8, alignItems: 'center' },
+  buttonDisabled: { backgroundColor: '#99ccff' },
+  buttonText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  error: { color: '#ff4d4d', marginBottom: 15, textAlign: 'center' },
+  link: { color: '#007AFF', textAlign: 'center', marginTop: 20, fontSize: 16 },
+  modalContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)' },
+  modalContent: { backgroundColor: '#fff', padding: 20, borderRadius: 10, width: '80%', alignItems: 'center' },
+  modalTitle: { fontSize: 24, fontWeight: 'bold', marginBottom: 20, color: '#333' },
 });
 
 export default Login;

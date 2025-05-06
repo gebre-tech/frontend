@@ -1,4 +1,3 @@
-// app/(tabs)/GroupsNavigator.js
 import { createStackNavigator } from '@react-navigation/stack';
 import Groups from './groups';
 import CreateGroupScreen from './CreateGroupScreen';
@@ -12,17 +11,16 @@ const Stack = createStackNavigator();
 const GroupsNavigator = () => {
   return (
     <Stack.Navigator
-        initialRouteName="Groups"
-        screenOptions={{
-            headerShown: false,
-        }}
-        >
+      initialRouteName="Groups"
+      screenOptions={{
+        headerShown: false,
+      }}
+    >
       <Stack.Screen name="Groups" component={Groups} />
       <Stack.Screen name="CreateGroupScreen" component={CreateGroupScreen} />
       <Stack.Screen name="GroupChatScreen" component={GroupChatScreen} />
       <Stack.Screen name="GroupInfo" component={GroupInfo} />
       <Stack.Screen name="FriendProfile" component={FriendProfile} />
-
     </Stack.Navigator>
   );
 };

@@ -1,4 +1,3 @@
-// app/(tabs)/ChatList.jsx
 import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
 import {
   View,
@@ -185,6 +184,9 @@ const ChatListItem = memo(({ item, navigateToChat, userId }) => {
     isSentMessage = lastMessage.sender === userId;
   }
 
+  // Prepare the name for the avatar fallback
+  const senderName = contact.friend.user.first_name || contact.friend.user.username || 'Unknown';
+
   return (
     <TouchableOpacity
       style={tw`flex-row items-center p-3 bg-white mx-2 my-0.5 border-b border-gray-200`}
@@ -193,9 +195,13 @@ const ChatListItem = memo(({ item, navigateToChat, userId }) => {
       <View style={tw`relative`}>
         <Image
           source={{
-            uri: contact.friend.profile_picture || PLACEHOLDER_IMAGE,
+            uri:
+              contact.friend.profile_picture ||
+              PLACEHOLDER_IMAGE ||
+              `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=random`,
           }}
           style={tw`w-10 h-10 rounded-full mr-3`}
+          onError={() => console.log(`Failed to load profile picture for ${senderName}`)}
         />
         {isOnline && (
           <View

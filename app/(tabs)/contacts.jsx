@@ -212,9 +212,12 @@ const ContactsScreen = ({ navigation }) => {
     const isOnline =
       item.is_online ||
       (item.friend.last_seen && new Date() - new Date(item.friend.last_seen) < 5 * 60 * 1000);
-
+  
     const isSelected = selectedContactId === item.friend_id; // Check if this contact is selected
-
+  
+    // Prepare the name for the avatar fallback
+    const senderName = item.friend.user.first_name || item.friend.user.username || 'Unknown';
+  
     return (
       <Pressable
         style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-sm border-b border-gray-100 ${
@@ -238,9 +241,13 @@ const ContactsScreen = ({ navigation }) => {
         >
           <Image
             source={{
-              uri: item.friend.profile_picture || PLACEHOLDER_IMAGE,
+              uri:
+                item.friend.profile_picture ||
+                PLACEHOLDER_IMAGE ||
+                `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=random`,
             }}
             style={tw`w-12 h-12 rounded-full mr-3`}
+            onError={() => console.log(`Failed to load profile picture for ${senderName}`)}
           />
           {isOnline && (
             <View

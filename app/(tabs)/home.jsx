@@ -1,7 +1,7 @@
 import { StatusBar } from 'react-native';
 import React from 'react';
 import { createDrawerNavigator } from '@react-navigation/drawer';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import { Dimensions, Text, View, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import CustomDrawerContent from './CustomDrawerContent';
@@ -22,54 +22,69 @@ export default function Home() {
       <Drawer.Navigator
         drawerContent={(props) => <CustomDrawerContent {...props} />}
         screenOptions={{
-          drawerStyle: { width: width * 0.75 },
-          drawerActiveTintColor: '#1a73e8',
-          drawerInactiveTintColor: '#fff', // White for better contrast
-          drawerActiveBackgroundColor: 'rgba(255, 255, 255, 0.2)', // Semi-transparent active background
+          drawerStyle: {
+            width: width * 0.75,
+            backgroundColor: 'rgba(255, 255, 255, 0.1)', // Glassmorphism background
+            borderRightWidth: 1,
+            borderRightColor: 'rgba(255, 255, 255, 0.2)',
+            backdropFilter: 'blur(10px)', // Simulate glassmorphism
+          },
+          drawerActiveTintColor: '#FFD700', // Yellow for active items
+          drawerInactiveTintColor: '#FFFFFF', // White for inactive items
+          drawerActiveBackgroundColor: 'rgba(255, 215, 0, 0.2)', // Yellow with transparency
           drawerItemStyle: {
-            borderRadius: 10,
-            marginVertical: 3, // Reduced vertical margin for tighter spacing
-            paddingHorizontal: 8, // Slightly reduced padding
-            backgroundColor: 'rgba(255, 255, 255, 0.1)', // Subtle background for each item
+            borderRadius: 12,
+            marginVertical: 4,
+            paddingHorizontal: 10,
+            backgroundColor: 'rgba(255, 255, 255, 0.05)', // Subtle background
           },
           drawerLabelStyle: {
             fontSize: width < 400 ? 16 : 18,
-            fontWeight: '700',
-            marginLeft: -10, // Adjusted to reduce space between icon and text (was -20)
+            fontWeight: '600',
+            marginLeft: -10,
             textShadowColor: 'rgba(0, 0, 0, 0.3)',
             textShadowOffset: { width: 1, height: 1 },
-            textShadowRadius: 2,
+            textShadowRadius: 3,
+            fontFamily: 'Roboto', // Professional font (ensure font is loaded)
           },
           headerStyle: {
-            elevation: 6,
-            shadowOpacity: 0.2,
+            elevation: 8,
+            shadowOpacity: 0.3,
             shadowOffset: { width: 0, height: 4 },
-            shadowRadius: 8,
+            shadowRadius: 10,
             borderBottomLeftRadius: 30,
             borderBottomRightRadius: 30,
             height: headerHeight,
+            backgroundColor: 'rgba(255, 255, 255, 0.1)', // Glassmorphism effect
           },
           headerBackground: () => (
             <LinearGradient
-              colors={['#008000', '#FFD700', '#FF0000']} // Ethiopian flag colors: Green, Yellow, Red
+              colors={['#008000', '#FFD700', '#FF0000']} // Ethiopian flag colors
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.headerBackground}
             />
           ),
-          headerTintColor: '#fff',
+          headerTintColor: '#FFFFFF',
           headerTitleStyle: {
-            fontSize: 24,
+            fontSize: 26,
             fontWeight: '800',
-            letterSpacing: 1,
-            textShadowColor: 'rgba(0, 0, 0, 0.4)',
+            letterSpacing: 1.2,
+            textShadowColor: 'rgba(0, 0, 0, 0.5)',
             textShadowOffset: { width: 2, height: 2 },
-            textShadowRadius: 4,
+            textShadowRadius: 5,
+            fontFamily: 'Roboto', // Professional font
           },
           headerTitleAlign: 'center',
           headerLeftContainerStyle: {
             paddingLeft: 16,
           },
+          headerRight: () => (
+            <View style={styles.headerRight}>
+              <FontAwesome5 name="lock" size={20} color="#FFFFFF" />
+              <Text style={styles.headerRightText}>Secure</Text>
+            </View>
+          ),
         }}
       >
         <Drawer.Screen
@@ -78,7 +93,7 @@ export default function Home() {
           options={{
             drawerIcon: ({ color }) => (
               <View style={styles.iconContainer}>
-                <MaterialCommunityIcons name="home" size={26} color={color} /> {/* Reduced size slightly */}
+                <MaterialCommunityIcons name="home" size={26} color={color} />
               </View>
             ),
             title: 'HabChat',
@@ -114,7 +129,7 @@ export default function Home() {
           options={{
             drawerIcon: ({ color }) => (
               <View style={styles.iconContainer}>
-                <MaterialCommunityIcons name="logout" size={26} color="red" />
+                <MaterialCommunityIcons name="logout" size={26} color="#FF0000" />
               </View>
             ),
             drawerLabel: ({ color }) => (
@@ -135,18 +150,31 @@ const styles = StyleSheet.create({
     flex: 1,
     borderBottomLeftRadius: 30,
     borderBottomRightRadius: 30,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)', // Subtle glassmorphism effect
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingRight: 16,
+  },
+  headerRightText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 4,
+    textShadowColor: 'rgba(0, 0, 0, 0.3)',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 2,
   },
   iconContainer: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 8,
-    padding: 4, // Reduced padding to make icon area more compact
-    marginRight: 8, // Added margin to create space between icon and text
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 10,
+    padding: 6,
+    marginRight: 10,
   },
   logoutLabel: {
-    color: '#000', // Changed to black as requested
+    color: '#FF0000',
     fontSize: width < 400 ? 16 : 18,
-    fontWeight: '700',
+    fontWeight: '600',
     textShadowColor: 'rgba(0, 0, 0, 0.3)',
     textShadowOffset: { width: 1, height: 1 },
     textShadowRadius: 2,

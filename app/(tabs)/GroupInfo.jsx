@@ -13,7 +13,6 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import tw from 'twrnc';
 import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import Toast from 'react-native-toast-message';
 import { API_URL, PLACEHOLDER_IMAGE } from '../utils/constants';
 import * as ImagePicker from 'expo-image-picker';
@@ -313,7 +312,7 @@ const GroupInfo = () => {
         text2: 'You have left the group.',
         position: 'bottom',
       });
-      navigation.goBack(); // Navigate back to the previous screen (e.g., group list)
+      navigation.goBack();
     } catch (error) {
       handleError(error);
     }
@@ -526,7 +525,7 @@ const GroupInfo = () => {
 
   return (
     <View style={tw`flex-1 bg-gray-100`}>
-      <LinearGradient colors={['#4A00E0', '#8E2DE2']} style={tw`p-4 pt-10 flex-row items-center justify-between shadow-md`}>
+      <View style={tw`bg-[#1a73e8] p-4 pt-10 flex-row items-center justify-between`}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Ionicons name="arrow-back" size={24} color="white" />
         </TouchableOpacity>
@@ -544,12 +543,12 @@ const GroupInfo = () => {
               />
             ) : (
               <View style={tw`w-12 h-12 rounded-full bg-white flex items-center justify-center`}>
-                <Text style={tw`text-lg font-bold text-purple-600`}>{group.name[0]}</Text>
+                <Text style={tw`text-lg font-bold text-[#1a73e8]`}>{group.name[0]}</Text>
               </View>
             )}
             {group.admins.some(admin => admin.id === user?.id) && (
               <View style={tw`absolute bottom-0 right-0 bg-white rounded-full p-1 border border-gray-200`}>
-                <Ionicons name="camera" size={16} color="#4A00E0" />
+                <Ionicons name="camera" size={16} color="#1a73e8" />
               </View>
             )}
           </TouchableOpacity>
@@ -561,7 +560,7 @@ const GroupInfo = () => {
         <TouchableOpacity onPress={fetchGroupDetails} style={tw`p-2`}>
           <Ionicons name="information-circle" size={24} color="white" />
         </TouchableOpacity>
-      </LinearGradient>
+      </View>
 
       <Modal isVisible={isModalVisible} onBackdropPress={() => setModalVisible(false)}>
         <View style={tw`bg-white p-5 rounded-lg`}>

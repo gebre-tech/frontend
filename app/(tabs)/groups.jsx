@@ -1,19 +1,18 @@
-import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
+  TextInput,
   FlatList,
   TouchableOpacity,
-  ActivityIndicator,
-  TextInput,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import tw from 'twrnc';
-import { LinearGradient } from 'expo-linear-gradient';
 import Toast from 'react-native-toast-message';
 import { API_HOST, API_URL } from '../utils/constants';
 import { AuthContext } from '../../context/AuthContext';
@@ -22,13 +21,12 @@ const Groups = () => {
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
-  const [lastMessages, setLastMessages] = useState({}); // Store last message for each group
-  const [unreadMessages, setUnreadMessages] = useState({}); // Store unread message status for each group
+  const [lastMessages, setLastMessages] = useState({});
+  const [unreadCounts, setUnreadCounts] = useState({});
   const navigation = useNavigation();
-  const { user } = useContext(AuthContext);
+  const { user } = React.useContext(AuthContext);
   const ws = useRef(null);
 
-  // Fetch groups
   const fetchGroups = useCallback(async () => {
     try {
       setLoading(true);
@@ -40,22 +38,15 @@ const Groups = () => {
       const groupData = response.data || [];
       setGroups(groupData);
 
-      // Fetch the last message and unread status for each group
       const lastMessagesData = {};
-      const unreadMessagesData = {};
+      const unreadCountsData = {};
       for (const group of groupData) {
         const lastMessage = await fetchLastMessage(group.id, token);
         lastMessagesData[group.id] = lastMessage;
-        if (lastMessage && user) {
-          const readBy = lastMessage.read_by || [];
-          const isUnread = !readBy.some((u) => u.id === user.id);
-          unreadMessagesData[group.id] = isUnread;
-        } else {
-          unreadMessagesData[group.id] = false;
-        }
+        unreadCountsData[group.id] = await fetchUnreadCount(group.id, token);
       }
       setLastMessages(lastMessagesData);
-      setUnreadMessages(unreadMessagesData);
+      setUnreadCounts(unreadCountsData);
     } catch (error) {
       handleError(error);
     } finally {
@@ -63,7 +54,6 @@ const Groups = () => {
     }
   }, [user]);
 
-  // Fetch the last message for a specific group
   const fetchLastMessage = async (groupId, token) => {
     try {
       const response = await axios.get(`${API_URL}/groups/messages/${groupId}/`, {
@@ -78,7 +68,20 @@ const Groups = () => {
     }
   };
 
-  // Search groups
+  const fetchUnreadCount = async (groupId, token) => {
+    try {
+      const response = await axios.get(`${API_URL}/groups/messages/${groupId}/`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { page_size: 100 },
+      });
+      const messages = response.data.results || [];
+      return messages.filter((msg) => !(msg.read_by || []).some((u) => u.id === user?.id)).length;
+    } catch (error) {
+      console.error(`Failed to fetch unread count for group ${groupId}:`, error);
+      return 0;
+    }
+  };
+
   const searchGroups = useCallback(async (query) => {
     if (!query) return fetchGroups();
     try {
@@ -93,20 +96,14 @@ const Groups = () => {
       setGroups(groupData);
 
       const lastMessagesData = {};
-      const unreadMessagesData = {};
+      const unreadCountsData = {};
       for (const group of groupData) {
         const lastMessage = await fetchLastMessage(group.id, token);
         lastMessagesData[group.id] = lastMessage;
-        if (lastMessage && user) {
-          const readBy = lastMessage.read_by || [];
-          const isUnread = !readBy.some((u) => u.id === user.id);
-          unreadMessagesData[group.id] = isUnread;
-        } else {
-          unreadMessagesData[group.id] = false;
-        }
+        unreadCountsData[group.id] = await fetchUnreadCount(group.id, token);
       }
       setLastMessages(lastMessagesData);
-      setUnreadMessages(unreadMessagesData);
+      setUnreadCounts(unreadCountsData);
     } catch (error) {
       handleError(error);
     } finally {
@@ -114,7 +111,6 @@ const Groups = () => {
     }
   }, [fetchGroups, user]);
 
-  // Connect to WebSocket for real-time updates
   const connectWebSocket = async () => {
     const token = await AsyncStorage.getItem('token');
     if (!token) return;
@@ -134,11 +130,26 @@ const Groups = () => {
             [groupId]: message,
           }));
           if (user) {
-            const readBy = message.read_by || [];
-            const isUnread = !readBy.some((u) => u.id === user.id);
-            setUnreadMessages((prev) => ({
+            const readByUsers = message.read_by || [];
+            const isUnread = !readByUsers.some((u) => u.id === user.id);
+            setUnreadCounts((prev) => ({
               ...prev,
-              [groupId]: isUnread,
+              [groupId]: isUnread ? (prev[groupId] || 0) + 1 : prev[groupId],
+            }));
+          }
+        } else if (data.type === 'read_receipt') {
+          const message = data.message;
+          const groupId = message.group_id;
+          setLastMessages((prev) => ({
+            ...prev,
+            [groupId]: prev[groupId]?.id === message.id ? message : prev[groupId],
+          }));
+          if (user) {
+            const readByUsers = message.read_by || [];
+            const isUnread = !readByUsers.some((u) => u.id === user.id);
+            setUnreadCounts((prev) => ({
+              ...prev,
+              [groupId]: isUnread ? prev[groupId] : Math.max((prev[groupId] || 1) - 1, 0),
             }));
           }
         }
@@ -189,7 +200,7 @@ const Groups = () => {
 
   const renderItem = ({ item }) => {
     const lastMessage = lastMessages[item.id];
-    const isUnread = unreadMessages[item.id];
+    const unreadCount = unreadCounts[item.id] || 0;
 
     let senderName = 'Unknown';
     if (lastMessage) {
@@ -245,8 +256,10 @@ const Groups = () => {
                 {new Date(lastMessage.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </Text>
             )}
-            {isUnread && (
-              <View style={tw`w-3 h-3 rounded-full bg-blue-500`} />
+            {unreadCount > 0 && (
+              <View style={tw`bg-blue-500 rounded-full px-2 py-1`}>
+                <Text style={tw`text-xs text-white font-semibold`}>{unreadCount}</Text>
+              </View>
             )}
           </View>
         </View>
@@ -256,28 +269,24 @@ const Groups = () => {
 
   return (
     <View style={tw`flex-1 bg-gray-100`}>
-      <LinearGradient
-        colors={['#4A00E0', '#8E2DE2']}
-        style={tw`p-4 pt-10 flex-row items-center justify-between shadow-md`}
-      >
-        <Text style={tw`text-2xl font-bold text-white`}>Groups</Text>
+      <View style={tw`p-4 flex-row items-center bg-white shadow-sm`}>
+        <View style={tw`flex-1 flex-row items-center bg-white rounded-xl px-6 py-3 border border-gray-200 shadow-sm`}>
+          <Ionicons name="search" size={20} color="#9CA3AF" style={tw`mr-2`} />
+          <TextInput
+            style={tw`flex-1 text-gray-800 text-lg`}
+            placeholder="Search groups..."
+            placeholderTextColor="#9CA3AF"
+            value={searchText}
+            onChangeText={setSearchText}
+            autoCapitalize="none"
+          />
+        </View>
         <TouchableOpacity
-          style={tw`p-2 bg-white rounded-full shadow-md`}
+          style={tw`ml-3 p-2 bg-blue-500 rounded-full`}
           onPress={() => navigation.navigate('CreateGroupScreen')}
         >
-          <Ionicons name="add" size={24} color="#4A00E0" />
+          <Ionicons name="add" size={24} color="#fff" />
         </TouchableOpacity>
-      </LinearGradient>
-
-      <View style={tw`p-4`}>
-        <TextInput
-          style={tw`bg-white rounded-full px-4 py-3 text-gray-800 border border-gray-200 shadow-md`}
-          placeholder="Search groups..."
-          placeholderTextColor="#9CA3AF"
-          value={searchText}
-          onChangeText={setSearchText}
-          autoCapitalize="none"
-        />
       </View>
 
       {loading ? (

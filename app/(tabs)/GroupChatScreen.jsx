@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useContext, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,590 +7,758 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  SafeAreaView,
+  Modal,
   Animated,
-  Pressable,
 } from 'react-native';
-import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useRoute, useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
+import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import * as Linking from 'expo-linking';
 import tw from 'twrnc';
-import { LinearGradient } from 'expo-linear-gradient';
 import Toast from 'react-native-toast-message';
-import { API_HOST, API_URL, PLACEHOLDER_IMAGE } from '../utils/constants';
-import { AuthContext } from '../../context/AuthContext';
-import debounce from 'lodash.debounce';
 import axios from 'axios';
+import { API_HOST, API_URL } from '../utils/constants';
+import { AuthContext } from '../../context/AuthContext';
+import { Video } from 'expo-av';
 
 const GroupChatScreen = () => {
   const { groupId, groupName } = useRoute().params;
-  const { user } = useContext(AuthContext);
+  const { user } = React.useContext(AuthContext);
   const navigation = useNavigation();
   const [messages, setMessages] = useState([]);
-  const [message, setMessage] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [readMessages, setReadMessages] = useState(new Set());
-  const ws = useRef(null);
-  const flatListRef = useRef(null);
-  const [typingUser, setTypingUser] = useState(null);
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const [inputText, setInputText] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
-  const [senderProfiles, setSenderProfiles] = useState({});
-  const pageSize = 20;
-
-  const userRef = useRef(user);
-  const markMessageAsReadRef = useRef(null);
-
+  const [profiles, setProfiles] = useState({});
+  const [isTyping, setIsTyping] = useState(null);
+  const [pendingFile, setPendingFile] = useState(null);
+  const [fullScreenImage, setFullScreenImage] = useState(null);
+  const [filePreview, setFilePreview] = useState(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadedFiles, setDownloadedFiles] = useState(new Set());
+  const [groupProfilePicture, setGroupProfilePicture] = useState(null);
+  const ws = useRef(null);
+  const flatListRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const pageSize = 30;
   const storageKey = `group_messages_${groupId}`;
-  const queueKey = `queued_messages_${groupId}`;
+  const downloadedFilesKey = `downloaded_files_${groupId}`;
 
-  // Load messages from AsyncStorage
-  const loadCachedMessages = async () => {
-    try {
-      const cachedMessages = await AsyncStorage.getItem(storageKey);
-      if (cachedMessages) {
-        const parsedMessages = JSON.parse(cachedMessages);
-        setMessages(parsedMessages);
-        fetchSenderProfiles(parsedMessages);
-        return parsedMessages.length > 0;
-      }
-      return false;
-    } catch (error) {
-      console.error('Error loading cached messages:', error);
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Save messages to AsyncStorage with cache management
-  const saveMessagesToStorage = async (msgs) => {
-    try {
-      const limitedMessages = msgs.slice(-100);
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const filteredMessages = limitedMessages.filter(
-        (msg) => new Date(msg.timestamp) >= thirtyDaysAgo
-      );
-      await AsyncStorage.setItem(storageKey, JSON.stringify(filteredMessages));
-    } catch (error) {
-      console.error('Error saving messages to storage:', error);
-    }
-  };
-
-  // Load queued messages from AsyncStorage
-  const loadQueuedMessages = async () => {
-    try {
-      const queued = await AsyncStorage.getItem(queueKey);
-      return queued ? JSON.parse(queued) : [];
-    } catch (error) {
-      console.error('Error loading queued messages:', error);
-      return [];
-    }
-  };
-
-  // Save queued messages to AsyncStorage
-  const saveQueuedMessages = async (queued) => {
-    try {
-      await AsyncStorage.setItem(queueKey, JSON.stringify(queued));
-    } catch (error) {
-      console.error('Error saving queued messages:', error);
-    }
-  };
-
-  // Fetch sender profiles
-  const fetchSenderProfiles = async (messages) => {
-    try {
-      const token = await AsyncStorage.getItem('token');
-      if (!token) {
-        console.error('No authentication token found for fetching profiles');
-        throw new Error('No authentication token found');
-      }
-
-      const uniqueSenders = [...new Set(messages.map((msg) => msg.sender?.id))].filter(Boolean);
-      const profiles = { ...senderProfiles };
-
-      for (const senderId of uniqueSenders) {
-        if (profiles[senderId]) continue;
-
-        const sender = messages.find((msg) => msg.sender?.id === senderId)?.sender;
-        if (!sender?.username) {
-          console.warn(`Sender with ID ${senderId} has no username, skipping profile fetch`);
-          profiles[senderId] = null;
-          continue;
-        }
-
-        try {
-          console.log(`Fetching profile for username: ${sender.username}`);
-          const response = await axios.get(`${API_URL}/profiles/friend/${sender.username}/`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          const profileData = response.data;
-          console.log(`Profile data for ${sender.username}:`, profileData);
-
-          const now = new Date();
-          const lastSeen = profileData.last_seen ? new Date(profileData.last_seen) : null;
-          profileData.is_online = lastSeen && (now - lastSeen) < 5 * 60 * 1000;
-          profiles[senderId] = profileData;
-        } catch (error) {
-          console.error(`Failed to fetch profile for ${sender.username}:`, error.response?.data || error.message);
-          profiles[senderId] = null;
-        }
-      }
-      setSenderProfiles(profiles);
-    } catch (error) {
-      handleError(error);
-    }
-  };
-
-  // Fetch messages with pagination
-  const fetchMessages = async (pageNum = 1, reset = false) => {
-    try {
-      if (pageNum !== 1) setLoadingMore(true);
-      else setLoading(true);
-
-      const token = await AsyncStorage.getItem('token');
-      if (!token) throw new Error('No authentication token found');
-
-      const response = await fetch(
-        `${API_URL}/groups/messages/${groupId}/?page=${pageNum}&page_size=${pageSize}`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP error ${response.status}`);
-      }
-
-      const data = await response.json();
-      const newMessages = data.results || [];
-      const hasNext = data.next;
-
-      setMessages((prev) => {
-        const existingIds = new Set(prev.map((msg) => msg.id));
-        const filteredMessages = newMessages.filter((msg) => !existingIds.has(msg.id));
-        const updatedMessages = reset
-          ? filteredMessages
-          : [...filteredMessages, ...prev].sort(
-              (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
-            );
-        saveMessagesToStorage(updatedMessages);
-        fetchSenderProfiles(updatedMessages);
-        return updatedMessages;
-      });
-
-      setHasMore(hasNext);
-      if (hasNext) setPage(pageNum + 1);
-      else setPage(1);
-      return true;
-    } catch (error) {
-      handleError(error);
-      return false;
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
-    }
-  };
-
-  // Debounced fetchMessages
-  const debouncedFetchMessages = useCallback(
-    debounce((pageNum, reset) => fetchMessages(pageNum, reset), 500),
-    []
-  );
-
-  const connectWebSocket = async () => {
-    const token = await AsyncStorage.getItem('token');
-    if (!token) return;
-
-    ws.current = new WebSocket(`ws://${API_HOST}/ws/groups/${groupId}/?token=${token}`);
-    ws.current.onopen = async () => {
-      console.log('Groups WebSocket connected');
-      await syncQueuedMessages();
-    };
-    ws.current.onmessage = (e) => {
+  useEffect(() => {
+    const loadDownloadedFiles = async () => {
       try {
-        const data = JSON.parse(e.data);
-        if (data.type === 'group_message') {
-          setMessages((prev) => {
-            const messageIndex = prev.findIndex((msg) => msg.id === data.message.id);
-            let updatedMessages;
-            if (messageIndex !== -1) {
-              updatedMessages = [...prev];
-              updatedMessages[messageIndex] = data.message;
-            } else {
-              updatedMessages = [...prev, data.message].sort(
-                (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
-              );
-              flatListRef.current?.scrollToEnd({ animated: true });
-              Animated.timing(fadeAnim, {
-                toValue: 1,
-                duration: 300,
-                useNativeDriver: true,
-              }).start();
-            }
-            saveMessagesToStorage(updatedMessages);
-            fetchSenderProfiles(updatedMessages);
-            return updatedMessages;
-          });
-        } else if (data.type === 'typing') {
-          if (data.user_id !== user?.id) {
-            setTypingUser(data.first_name);
-            setTimeout(() => setTypingUser(null), 2000);
-          }
-        } else if (data.type === 'error') {
-          handleError(new Error(data.message));
+        const storedFiles = await AsyncStorage.getItem(downloadedFilesKey);
+        if (storedFiles) {
+          const parsedFiles = new Set(JSON.parse(storedFiles));
+          setDownloadedFiles(parsedFiles);
         }
       } catch (error) {
-        console.error('WebSocket message parsing error:', error);
+        console.error('Error loading downloaded files:', error);
+      }
+    };
+    loadDownloadedFiles();
+  }, []);
+
+  useEffect(() => {
+    const saveDownloadedFiles = async () => {
+      try {
+        await AsyncStorage.setItem(downloadedFilesKey, JSON.stringify([...downloadedFiles]));
+      } catch (error) {
+        console.error('Error saving downloaded files:', error);
+      }
+    };
+    saveDownloadedFiles();
+  }, [downloadedFiles]);
+
+  const fetchGroupProfilePicture = useCallback(async () => {
+    try {
+      const token = await AsyncStorage.getItem('token');
+      if (!token) throw new Error('No authentication token found');
+      const response = await axios.get(`${API_URL}/groups/list/`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const groupData = response.data || [];
+      const group = groupData.find(g => g.id === groupId);
+      if (group && group.profile_picture) {
+        setGroupProfilePicture(`${API_URL}${group.profile_picture}`);
+      } else {
+        setGroupProfilePicture(null);
+      }
+    } catch (error) {
+      console.error('Error fetching group profile picture:', error);
+    }
+  }, [groupId]);
+
+  const initializeWebSocket = useCallback(async () => {
+    const token = await AsyncStorage.getItem('token');
+    if (!token || ws.current?.readyState === WebSocket.OPEN) return;
+
+    ws.current = new WebSocket(`ws://${API_HOST}/ws/groups/${groupId}/?token=${token}`);
+
+    ws.current.onopen = () => console.log('WebSocket connected');
+    ws.current.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.type === 'group_message') {
+        setMessages((prev) => {
+          if (prev.some((msg) => msg.id === data.message.id)) {
+            return prev;
+          }
+          const updated = [...prev, data.message].sort(
+            (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
+          );
+          saveMessages(updated);
+          return updated;
+        });
+        flatListRef.current?.scrollToEnd({ animated: true });
+      } else if (data.type === 'typing') {
+        if (data.user_id !== user?.id) {
+          setIsTyping(data.first_name);
+          clearTimeout(typingTimeoutRef.current);
+          typingTimeoutRef.current = setTimeout(() => setIsTyping(null), 2000);
+        }
+      } else if (data.type === 'error') {
+        Toast.show({
+          type: 'error',
+          text1: 'Error',
+          text2: data.message || 'WebSocket error',
+        });
       }
     };
     ws.current.onerror = (error) => {
       console.error('WebSocket error:', error);
-      setTimeout(connectWebSocket, 2000);
-    };
-    ws.current.onclose = () => console.log('Groups WebSocket closed');
-  };
-
-  // Sync queued messages when online
-  const syncQueuedMessages = async () => {
-    if (ws.current?.readyState !== WebSocket.OPEN) return;
-
-    const queuedMessages = await loadQueuedMessages();
-    if (queuedMessages.length === 0) return;
-
-    for (const msg of queuedMessages) {
-      ws.current.send(JSON.stringify({
-        type: 'group_message',
-        message: msg.message,
-        group_id: groupId
-      }));
-    }
-
-    await saveQueuedMessages([]);
-  };
-
-  const sendMessage = async () => {
-    if (message.trim() === '') return;
-
-    if (ws.current?.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify({
-        type: 'group_message',
-        message,
-        group_id: groupId
-      }));
-      setMessage('');
-    } else {
-      const queuedMessages = await loadQueuedMessages();
-      queuedMessages.push({ message, timestamp: new Date().toISOString() });
-      await saveQueuedMessages(queuedMessages);
       Toast.show({
-        type: 'info',
-        text1: 'Offline',
-        text2: 'Message queued and will be sent when online',
-        position: 'bottom',
+        type: 'error',
+        text1: 'WebSocket Error',
+        text2: 'Failed to connect to server. Using REST API as fallback.',
       });
-      setMessage('');
+    };
+    ws.current.onclose = () => {
+      console.log('WebSocket closed');
+      setTimeout(initializeWebSocket, 3000);
+    };
+  }, [groupId, user]);
+
+  const loadMessages = useCallback(async () => {
+    try {
+      const cached = await AsyncStorage.getItem(storageKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        setMessages(parsed);
+        fetchProfiles(parsed);
+        return parsed.length > 0;
+      }
+      return false;
+    } catch (error) {
+      console.error('Error loading messages:', error);
+      return false;
     }
-  };
+  }, [storageKey]);
 
-  const pickImage = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
-      allowsEditing: true,
-      quality: 1,
-    });
-
-    if (!result.canceled) {
-      sendAttachment(result.assets[0].uri);
+  const saveMessages = useCallback(async (msgs) => {
+    try {
+      const limited = msgs.slice(-100);
+      await AsyncStorage.setItem(storageKey, JSON.stringify(limited));
+    } catch (error) {
+      console.error('Error saving messages:', error);
     }
-  };
+  }, [storageKey]);
 
-  const sendAttachment = async (uri) => {
+  const fetchMessages = useCallback(async (pageNum = 1, reset = false) => {
+    try {
+      setIsLoadingMore(pageNum !== 1);
+      setIsLoading(pageNum === 1);
+
+      const token = await AsyncStorage.getItem('token');
+      const response = await axios.get(
+        `${API_URL}/groups/messages/${groupId}/?page=${pageNum}&page_size=${pageSize}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const { results, next } = response.data;
+      setMessages((prev) => {
+        const newMessages = reset
+          ? results
+          : [...results, ...prev].sort(
+              (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
+            );
+        const uniqueMessages = Array.from(
+          new Map(newMessages.map((msg) => [msg.id, msg])).values()
+        );
+        saveMessages(uniqueMessages);
+        fetchProfiles(uniqueMessages);
+        return uniqueMessages;
+      });
+
+      setHasMore(!!next);
+      setPage(next ? pageNum + 1 : 1);
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: error.message || 'Failed to fetch messages',
+      });
+    } finally {
+      setIsLoading(false);
+      setIsLoadingMore(false);
+    }
+  }, [groupId, pageSize, saveMessages]);
+
+  const fetchProfiles = useCallback(async (msgs) => {
     try {
       const token = await AsyncStorage.getItem('token');
-      if (!token) throw new Error('No authentication token found');
-      const formData = new FormData();
-      formData.append('group_id', groupId);
-      formData.append('message', '');
-      formData.append('attachment', {
-        uri,
-        name: 'attachment.jpg',
-        type: 'image/jpeg',
-      });
-      const response = await fetch(`${API_URL}/groups/message/send/`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'multipart/form-data',
-        },
-        body: formData,
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP error ${response.status}`);
+      const senderIds = [...new Set(msgs.map((msg) => msg.sender?.id).filter(Boolean))];
+      const newProfiles = { ...profiles };
+
+      for (const id of senderIds) {
+        if (newProfiles[id]) continue;
+        const sender = msgs.find((msg) => msg.sender?.id === id)?.sender;
+        if (!sender?.username) continue;
+
+        const response = await axios.get(`${API_URL}/profiles/friend/${sender.username}/`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        newProfiles[id] = {
+          ...response.data,
+          is_online: response.data.last_seen
+            ? (new Date() - new Date(response.data.last_seen)) < 5 * 60 * 1000
+            : false,
+        };
       }
-      debouncedFetchMessages(1, true);
+      setProfiles(newProfiles);
     } catch (error) {
-      handleError(error);
+      console.error('Error fetching profiles:', error);
     }
-  };
+  }, [profiles]);
 
-  const handleError = (error) => {
-    console.error('Error:', error);
-    Toast.show({
-      type: 'error',
-      text1: 'Error',
-      text2: error.message || 'An error occurred',
-      position: 'bottom',
-    });
-  };
+  const sendMessage = useCallback(() => {
+    if (!inputText.trim() || ws.current?.readyState !== WebSocket.OPEN) return;
 
-  const addReaction = (messageId, reaction) => {
-    if (ws.current?.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify({ type: 'reaction', message_id: messageId, reaction }));
-    }
-  };
+    ws.current.send(JSON.stringify({
+      type: 'group_message',
+      message: inputText,
+      group_id: groupId,
+    }));
+    setInputText('');
+  }, [inputText, groupId]);
 
-  const markMessageAsRead = (messageId) => {
-    if (ws.current?.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify({ type: 'read_receipt', message_id: messageId }));
-    }
-  };
-
-  const sendTyping = () => {
+  const sendTyping = useCallback(() => {
     if (ws.current?.readyState === WebSocket.OPEN) {
       ws.current.send(JSON.stringify({ type: 'typing', group_id: groupId }));
     }
+  }, [groupId]);
+
+  const pickAndSendFile = useCallback(async () => {
+    try {
+      let file, arrayBuffer, fileName, mimeType;
+
+      if (Platform.OS === 'web') {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '*/*';
+        input.onchange = async (event) => {
+          const selectedFile = event.target.files[0];
+          if (!selectedFile) return;
+
+          fileName = selectedFile.name;
+          mimeType = selectedFile.type || 'application/octet-stream';
+
+          const reader = new FileReader();
+          reader.onload = () => {
+            arrayBuffer = reader.result;
+            setPendingFile({ fileName, mimeType, arrayBuffer });
+            sendFile({ fileName, mimeType, arrayBuffer });
+          };
+          reader.onerror = () => {
+            Toast.show({
+              type: 'error',
+              text1: 'Error',
+              text2: 'Failed to read file',
+            });
+          };
+          reader.readAsArrayBuffer(selectedFile);
+        };
+        input.click();
+      } else {
+        const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
+        if (!result.canceled) {
+          file = result.assets[0];
+          const { uri, name, mimeType: docMimeType } = file;
+          fileName = name;
+          mimeType = docMimeType || 'application/octet-stream';
+
+          const base64Data = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+          const binaryString = atob(base64Data);
+          arrayBuffer = new ArrayBuffer(binaryString.length);
+          const uint8Array = new Uint8Array(arrayBuffer);
+          for (let i = 0; i < binaryString.length; i++) uint8Array[i] = binaryString.charCodeAt(i);
+
+          setPendingFile({ uri, fileName, mimeType, arrayBuffer });
+          sendFile({ fileName, mimeType, arrayBuffer, uri });
+        }
+      }
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: `Failed to pick file: ${error.message}`,
+      });
+    }
+  }, [groupId]);
+
+  const sendFile = useCallback(async ({ fileName, mimeType, arrayBuffer, uri }) => {
+    const maxRetries = 3;
+    let attempt = 0;
+
+    const sendViaWebSocket = async () => {
+      if (ws.current?.readyState === WebSocket.OPEN) {
+        try {
+          const metadata = {
+            type: 'group_message',
+            group_id: groupId,
+            file_name: fileName,
+            file_type: mimeType,
+          };
+          ws.current.send(JSON.stringify(metadata));
+          await new Promise(resolve => setTimeout(resolve, 100));
+          ws.current.send(arrayBuffer);
+          setPendingFile(null);
+          return true;
+        } catch (error) {
+          console.error('WebSocket send error:', error);
+          return false;
+        }
+      }
+      return false;
+    };
+
+    const sendViaRest = async () => {
+      try {
+        const token = await AsyncStorage.getItem('token');
+        const formData = new FormData();
+        formData.append('group_id', groupId);
+        formData.append('message', '');
+        formData.append('attachment', {
+          uri: Platform.OS === 'web' ? URL.createObjectURL(new Blob([arrayBuffer], { type: mimeType })) : uri,
+          name: fileName,
+          type: mimeType,
+        });
+        formData.append('file_name', fileName);
+        formData.append('file_type', mimeType);
+
+        await axios.post(`${API_URL}/groups/message/send/`, formData, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'multipart/form-data',
+          },
+        });
+        fetchMessages(1, true);
+        setPendingFile(null);
+        return true;
+      } catch (error) {
+        console.error('REST API send error:', error);
+        return false;
+      }
+    };
+
+    while (attempt < maxRetries) {
+      attempt++;
+      if (await sendViaWebSocket()) return;
+      if (await sendViaRest()) return;
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      }
+    }
+
+    Toast.show({
+      type: 'error',
+      text1: 'Error',
+      text2: 'Failed to upload file after multiple attempts',
+    });
+    setPendingFile(null);
+  }, [groupId, fetchMessages]);
+
+  const getFileIcon = (fileType) => {
+    if (fileType?.startsWith('image/')) return 'image';
+    if (fileType?.startsWith('video/')) return 'video';
+    if (fileType?.includes('pdf')) return 'picture-as-pdf';
+    if (fileType?.includes('document') || fileType?.includes('msword') || fileType?.includes('text')) return 'description';
+    return 'insert-drive-file';
   };
+
+  const formatFileSize = (bytes) => {
+    if (!bytes && bytes !== 0) return 'Unknown';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let size = parseFloat(bytes);
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex++;
+    }
+    return `${size.toFixed(2)} ${units[unitIndex]}`;
+  };
+
+  const openFilePreview = (file) => {
+    setFilePreview(file);
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeFilePreview = () => {
+    Animated.timing(fadeAnim, {
+      toValue: 0,
+      duration: 200,
+      useNativeDriver: true,
+    }).start(() => setFilePreview(null));
+  };
+
+  const downloadFile = async (url) => {
+    setDownloading(true);
+    try {
+      if (await Linking.canOpenURL(url)) {
+        await Linking.openURL(url);
+        Toast.show({
+          type: 'success',
+          text1: 'Success',
+          text2: 'File download initiated',
+        });
+        setDownloadedFiles((prev) => new Set(prev).add(url));
+      } else {
+        throw new Error('Cannot open URL');
+      }
+    } catch (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Failed to download file',
+      });
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const loadMore = useCallback(() => {
+    if (!isLoadingMore && hasMore) {
+      fetchMessages(page);
+    }
+  }, [isLoadingMore, hasMore, page, fetchMessages]);
 
   useEffect(() => {
-    userRef.current = user;
-    markMessageAsReadRef.current = markMessageAsRead;
-  }, [user, markMessageAsRead]);
+    const setup = async () => {
+      await loadMessages();
+      await fetchMessages(1, true);
+      await fetchGroupProfilePicture();
+      initializeWebSocket();
+    };
+    setup();
 
-  const onViewableItemsChanged = useCallback(({ viewableItems }) => {
-    viewableItems.forEach(({ item }) => {
-      const currentUser = userRef.current;
-      const markAsRead = markMessageAsReadRef.current;
-      if (!currentUser || !markAsRead) return;
-
-      const isCurrentUser = item.sender.id === currentUser.id;
-      const readBy = item.read_by || [];
-      if (
-        !isCurrentUser &&
-        !readBy.some((u) => u.id === currentUser.id) &&
-        !readMessages.has(item.id)
-      ) {
-        markAsRead(item.id);
-        setReadMessages((prev) => new Set(prev).add(item.id));
-      }
-    });
-  }, []);
-
-  const viewabilityConfig = {
-    itemVisiblePercentThreshold: 50,
-  };
-
-  const loadMoreMessages = useCallback(() => {
-    if (!loadingMore && hasMore) {
-      debouncedFetchMessages(page);
-    }
-  }, [loadingMore, hasMore, page]);
-
-  useFocusEffect(
-    useCallback(() => {
-      if (!user) return;
-
-      loadCachedMessages();
-      debouncedFetchMessages(1, true);
-      connectWebSocket();
-
-      return () => {
-        if (ws.current) {
-          ws.current.close();
-          console.log('Groups WebSocket cleanup');
-        }
-      };
-    }, [user, groupId])
-  );
+    return () => {
+      ws.current?.close();
+      clearTimeout(typingTimeoutRef.current);
+    };
+  }, [loadMessages, fetchMessages, initializeWebSocket, fetchGroupProfilePicture]);
 
   const renderMessage = ({ item }) => {
     const isCurrentUser = item.sender?.id === user?.id;
-    const reactions = item.reactions || {};
-    const readBy = item.read_by || [];
-    const senderProfile = senderProfiles[item.sender?.id];
-
-    const senderName = senderProfile?.user?.first_name || item.sender?.first_name || 'Unknown';
-    const senderUsername = item.sender?.username;
+    const profile = profiles[item.sender?.id] || {};
+    const senderName = profile.user?.first_name || item.sender?.first_name || 'Unknown';
+    const isDownloaded = downloadedFiles.has(item.file_url);
 
     return (
-      <Animated.View style={{ opacity: fadeAnim }}>
-        <Pressable
-          style={tw`flex-row items-end mb-2 ${isCurrentUser ? 'self-end flex-row-reverse' : 'self-start'}`}
-          onLongPress={() => addReaction(item.id, '❤️')}
-        >
-          <TouchableOpacity
-            onPress={() => {
-              if (senderUsername) {
-                navigation.navigate('FriendProfile', { username: senderUsername });
-              } else {
-                Toast.show({
-                  type: 'error',
-                  text1: 'Error',
-                  text2: 'User profile unavailable',
-                  position: 'bottom',
-                });
-              }
-            }}
-          >
-            <View style={tw`relative`}>
+      <View style={tw`flex-row mb-2 ${isCurrentUser ? 'justify-end' : 'justify-start'} px-4`}>
+        <View style={tw`max-w-3/4 flex-row ${isCurrentUser ? 'flex-row-reverse' : ''}`}>
+          {!isCurrentUser && (
+            <TouchableOpacity
+              onPress={() => item.sender?.username && navigation.navigate('FriendProfile', { username: item.sender.username })}
+            >
               <Image
-                source={{
-                  uri: senderProfile?.profile_picture || PLACEHOLDER_IMAGE || `https://ui-avatars.com/api/?name=${senderName}&background=random`,
-                }}
-                style={tw`w-10 h-10 rounded-full ${isCurrentUser ? 'ml-2' : 'mr-2'}`}
-                onError={() => console.log(`Failed to load profile picture for ${senderName}`)}
+                source={{ uri: profile.profile_picture || 'person' }}
+                style={tw`w-8 h-8 rounded-full mr-2`}
               />
-              <View
-                style={tw`absolute bottom-0 right-0 w-4 h-4 rounded-full border-2 border-white ${
-                  senderProfile?.is_online ? 'bg-green-500' : 'bg-gray-500'
-                } ${isCurrentUser ? 'right-2' : 'right-0'}`}
-              />
-            </View>
-          </TouchableOpacity>
-
+            </TouchableOpacity>
+          )}
           <View
-            style={tw`relative max-w-3/4 p-3 rounded-2xl shadow-sm ${
-              isCurrentUser ? 'bg-blue-500 rounded-br-none' : 'bg-gray-200 rounded-bl-none'
+            style={tw`p-3 rounded-2xl ${
+              isCurrentUser ? 'bg-blue-500' : 'bg-white border border-gray-200'
             }`}
           >
             {!isCurrentUser && (
-              <Text style={tw`text-sm font-semibold text-gray-800`}>{senderName}</Text>
+              <Text style={tw`text-xs font-semibold text-gray-600 mb-1`}>{senderName}</Text>
             )}
             {item.message && (
               <Text style={tw`${isCurrentUser ? 'text-white' : 'text-gray-800'}`}>
                 {item.message}
               </Text>
             )}
-            {item.attachment && (
-              <Image
-                source={{ uri: `${API_URL}${item.attachment}` }}
-                style={tw`w-40 h-40 rounded-lg mt-2`}
-              />
-            )}
-            <View style={tw`flex-row items-center justify-end mt-1`}>
-              <Text style={tw`text-xs ${isCurrentUser ? 'text-white' : 'text-gray-500'} mr-1`}>
-                {new Date(item.timestamp).toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </Text>
-              {isCurrentUser && (
-                <Ionicons
-                  name={readBy.length > 0 ? 'checkmark-done' : 'checkmark'}
-                  size={14}
-                  color={readBy.length > 0 ? '#34B7F1' : 'gray'}
-                />
-              )}
-            </View>
-            {Object.keys(reactions).length > 0 && (
-              <View style={tw`flex-row mt-1`}>
-                {Object.values(reactions).map((reaction, idx) => (
-                  <Text key={idx} style={tw`text-sm mr-1`}>{reaction}</Text>
-                ))}
+            {item.file_url && (
+              <View>
+                {isCurrentUser ? (
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (item.file_type?.startsWith('image/')) {
+                        setFullScreenImage(item.file_url);
+                      } else {
+                        openFilePreview({
+                          url: item.file_url,
+                          name: item.file_name || 'Unnamed File',
+                          type: item.file_type,
+                          size: item.file_size || 0,
+                        });
+                      }
+                    }}
+                    style={tw`flex-row items-center mt-2`}
+                  >
+                    <MaterialIcons
+                      name={getFileIcon(item.file_type)}
+                      size={24}
+                      color={isCurrentUser ? 'white' : '#6200EA'}
+                      style={tw`mr-2`}
+                    />
+                    <Text style={tw`${isCurrentUser ? 'text-white' : 'text-gray-800'} underline`}>
+                      {item.file_name || 'Unnamed File'}
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={tw`mt-2`}>
+                    <TouchableOpacity
+                      onPress={() =>
+                        openFilePreview({
+                          url: item.file_url,
+                          name: item.file_name || 'Unnamed File',
+                          type: item.file_type,
+                          size: item.file_size || 0,
+                        })
+                      }
+                      style={tw`flex-row items-center justify-center mb-1`}
+                    >
+                      <MaterialIcons
+                        name={isDownloaded ? getFileIcon(item.file_type) : 'cloud-download'}
+                        size={24}
+                        color="#6200EA"
+                      />
+                    </TouchableOpacity>
+                    <Text style={tw`text-gray-800 text-center text-xs`}>
+                      {item.file_name || 'Unnamed File'}
+                    </Text>
+                  </View>
+                )}
               </View>
             )}
+            <Text style={tw`text-xs ${isCurrentUser ? 'text-white/70' : 'text-gray-500'} mt-1 text-right`}>
+              {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </Text>
           </View>
-        </Pressable>
-      </Animated.View>
+        </View>
+      </View>
     );
   };
 
   return (
-    <View style={tw`flex-1 bg-gray-100`}>
-      <LinearGradient
-        colors={['#4A00E0', '#8E2DE2']}
-        style={tw`p-4 pt-10 flex-row items-center justify-between shadow-md`}
+    <SafeAreaView style={tw`flex-1 bg-gray-50`}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={tw`flex-1`}
       >
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={24} color="white" />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={tw`flex-row items-center`}
-          onPress={() => navigation.navigate('GroupInfo', { groupId })}
-        >
-          <View style={tw`w-10 h-10 rounded-full bg-white flex items-center justify-center mr-3`}>
-            <Text style={tw`text-lg font-bold text-purple-600`}>{groupName[0]}</Text>
+        <View style={tw`bg-[#1a73e8] p-2 flex-row items-center justify-between h-16`}>
+          <View style={tw`flex-row items-center flex-1`}>
+            {groupProfilePicture ? (
+              <TouchableOpacity
+                style={tw`mr-3`}
+                onPress={() => navigation.navigate('GroupInfo', { groupId })}
+              >
+                <Image
+                  source={{ uri: groupProfilePicture }}
+                  style={tw`w-10 h-10 rounded-full`}
+                  onError={() => console.log(`Failed to load profile picture for group ${groupName}`)}
+                />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={tw`mr-3`}
+                onPress={() => navigation.navigate('GroupInfo', { groupId })}
+              >
+                <View style={tw`w-10 h-10 rounded-full bg-white flex items-center justify-center`}>
+                  <Text style={tw`text-lg font-bold text-[#1a73e8]`}>{groupName[0]}</Text>
+                </View>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={tw`flex-1`}
+              onPress={() => navigation.navigate('GroupInfo', { groupId })}
+            >
+              <Text style={tw`text-lg font-bold text-white`}>{groupName}</Text>
+              <Text style={tw`text-xs text-white/70`}>Tap for group info</Text>
+            </TouchableOpacity>
           </View>
-          <View>
-            <Text style={tw`text-xl font-bold text-white`}>{groupName}</Text>
-            <Text style={tw`text-sm text-white opacity-70`}>Tap for group info</Text>
+          <TouchableOpacity onPress={() => navigation.goBack()}>
+            <Ionicons name="arrow-back" size={24} color="white" />
+          </TouchableOpacity>
+        </View>
+
+        {isLoading ? (
+          <ActivityIndicator size="large" color="#6200EA" style={tw`flex-1`} />
+        ) : (
+          <FlatList
+            ref={flatListRef}
+            data={messages}
+            renderItem={renderMessage}
+            keyExtractor={(item) => item.id.toString()}
+            contentContainerStyle={tw`pb-20`}
+            onEndReached={loadMore}
+            onEndReachedThreshold={0.3}
+            initialNumToRender={20}
+            ListFooterComponent={isLoadingMore && (
+              <ActivityIndicator size="small" color="#6200EA" style={tw`my-4`} />
+            )}
+            ListEmptyComponent={
+              <View style={tw`flex-1 justify-center items-center`}>
+                <Text style={tw`text-gray-500`}>Start the conversation!</Text>
+              </View>
+            }
+            onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+          />
+        )}
+
+        {isTyping && (
+          <View style={tw`px-4 mb-2`}>
+            <Text style={tw`text-gray-500 text-sm`}>{isTyping} is typing...</Text>
           </View>
-        </TouchableOpacity>
-        <View style={tw`w-10`} />
-      </LinearGradient>
+        )}
 
-      {loading ? (
-        <ActivityIndicator size="large" color="#007AFF" style={tw`flex-1 justify-center`} />
-      ) : messages.length === 0 ? (
-        <View style={tw`flex-1 justify-center items-center`}>
-          <Text style={tw`text-gray-500 text-lg`}>No messages yet</Text>
+        {pendingFile && (
+          <View style={tw`flex-row items-center bg-gray-100 rounded-lg p-2 mx-4 mb-2`}>
+            {pendingFile.mimeType?.startsWith('image/') ? (
+              <Image source={{ uri: pendingFile.uri }} style={tw`w-12 h-12 rounded-md mr-2`} />
+            ) : (
+              <Text style={tw`text-gray-800 mr-2`}>{pendingFile.fileName}</Text>
+            )}
+            <TouchableOpacity onPress={() => setPendingFile(null)}>
+              <Ionicons name="close" size={20} color="#6200EA" />
+            </TouchableOpacity>
+          </View>
+        )}
+
+        <View style={tw`flex-row items-center p-3 bg-white border-t border-gray-200`}>
+          <TouchableOpacity onPress={pickAndSendFile} style={tw`mr-3`}>
+            <Ionicons name="attach" size={24} color="#6200EA" />
+          </TouchableOpacity>
+          <TextInput
+            style={tw`flex-1 bg-gray-100 rounded-full px-4 py-2.5 text-gray-800`}
+            placeholder="Type a message..."
+            value={inputText}
+            onChangeText={(text) => {
+              setInputText(text);
+              sendTyping();
+            }}
+            onSubmitEditing={sendMessage}
+          />
+          <TouchableOpacity onPress={sendMessage} style={tw`ml-3`}>
+            <Ionicons name="send" size={24} color="#6200EA" />
+          </TouchableOpacity>
         </View>
-      ) : (
-        <FlatList
-          ref={flatListRef}
-          data={messages}
-          renderItem={renderMessage}
-          keyExtractor={(item) => item.id.toString()}
-          contentContainerStyle={tw`p-4 pb-20`}
-          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-          onViewableItemsChanged={onViewableItemsChanged}
-          viewabilityConfig={viewabilityConfig}
-          onEndReached={loadMoreMessages}
-          onEndReachedThreshold={0.5}
-          ListFooterComponent={
-            loadingMore ? (
-              <ActivityIndicator size="small" color="#007AFF" style={tw`my-4`} />
-            ) : null
-          }
-        />
-      )}
+      </KeyboardAvoidingView>
 
-      {typingUser && (
-        <View style={tw`flex-row items-center px-4 mb-2`}>
-          <Text style={tw`text-gray-500 text-sm`}>{typingUser} is typing...</Text>
+      <Modal
+        visible={!!fullScreenImage}
+        transparent={false}
+        animationType="fade"
+        onRequestClose={() => setFullScreenImage(null)}
+      >
+        <View style={tw`flex-1 bg-black justify-center items-center`}>
+          <TouchableOpacity
+            style={tw`absolute top-10 right-5 bg-black/50 rounded-full p-2`}
+            onPress={() => setFullScreenImage(null)}
+          >
+            <Ionicons name="close" size={30} color="white" />
+          </TouchableOpacity>
+          <Image
+            source={{ uri: fullScreenImage }}
+            style={tw`w-full h-full`}
+            resizeMode="contain"
+          />
         </View>
-      )}
+      </Modal>
 
-      <View style={tw`flex-row items-center p-3 bg-white border-t border-gray-200 shadow-md`}>
-        <TouchableOpacity onPress={pickImage} style={tw`mr-2`}>
-          <Ionicons name="image" size={24} color="#007AFF" />
-        </TouchableOpacity>
-        <TouchableOpacity style={tw`mr-2`}>
-          <Ionicons name="mic" size={24} color="#007AFF" />
-        </TouchableOpacity>
-        <TextInput
-          style={tw`flex-1 bg-gray-100 rounded-full px-4 py-2 text-gray-800 border border-gray-200 shadow-sm`}
-          placeholder="Type a message..."
-          placeholderTextColor="#9CA3AF"
-          value={message}
-          onChangeText={(text) => {
-            setMessage(text);
-            sendTyping();
-          }}
-          onSubmitEditing={sendMessage}
-        />
-        <TouchableOpacity onPress={sendMessage} style={tw`ml-2`}>
-          <Ionicons name="send" size={24} color="#007AFF" />
-        </TouchableOpacity>
-      </View>
+      <Modal
+        visible={!!filePreview}
+        transparent={true}
+        animationType="none"
+        onRequestClose={closeFilePreview}
+      >
+        <View style={tw`flex-1 bg-black/50 justify-center items-center`}>
+          <Animated.View
+            style={[
+              tw`bg-white rounded-2xl p-6 w-11/12 max-w-md`,
+              { opacity: fadeAnim },
+            ]}
+          >
+            <View style={tw`flex-row items-center justify-between mb-4`}>
+              <View style={tw`flex-row items-center`}>
+                <MaterialIcons
+                  name={getFileIcon(filePreview?.type)}
+                  size={40}
+                  color="#6200EA"
+                  style={tw`mr-3`}
+                />
+                <View>
+                  <Text style={tw`text-lg font-semibold text-gray-800`} numberOfLines={1}>
+                    {filePreview?.name}
+                  </Text>
+                  <Text style={tw`text-sm text-gray-500`}>
+                    Size: {formatFileSize(filePreview?.size)}
+                  </Text>
+                </View>
+              </View>
+              <View style={tw`flex-row`}>
+                <TouchableOpacity onPress={closeFilePreview} style={tw`mr-2`}>
+                  <Text style={tw`text-red-500 font-semibold`}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={closeFilePreview}>
+                  <Ionicons name="close" size={24} color="#6200EA" />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {filePreview?.type?.startsWith('video/') && (
+              <Video
+                source={{ uri: filePreview.url }}
+                style={tw`w-full h-48 rounded-lg mb-4`}
+                useNativeControls
+                resizeMode="contain"
+                isMuted={true}
+              />
+            )}
+
+            <TouchableOpacity
+              onPress={() => downloadFile(filePreview?.url)}
+              style={tw`bg-blue-500 rounded-full py-3 flex-row justify-center items-center`}
+              disabled={downloading}
+            >
+              {downloading ? (
+                <ActivityIndicator size="small" color="white" style={tw`mr-2`} />
+              ) : (
+                <Ionicons name="download-outline" size={20} color="white" style={tw`mr-2`} />
+              )}
+              <Text style={tw`text-white font-semibold`}>
+                {downloading ? 'Downloading...' : 'Download File'}
+              </Text>
+            </TouchableOpacity>
+          </Animated.View>
+        </View>
+      </Modal>
 
       <Toast />
-    </View>
+    </SafeAreaView>
   );
 };
 

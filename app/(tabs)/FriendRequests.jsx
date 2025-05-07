@@ -61,7 +61,7 @@ const FriendRequests = () => {
       } else if (data.type === 'friend_request_accepted') {
         setReceivedRequests((prev) => prev.filter((req) => req.id !== data.requestId));
         setSentRequests((prev) => prev.filter((req) => req.id !== data.requestId));
-        navigation.navigate('Contacts', { refresh: true });
+        navigation.getParent()?.navigate('Contacts', { refresh: true });
       } else if (data.type === 'friend_request_rejected') {
         setReceivedRequests((prev) => prev.filter((req) => req.id !== data.requestId));
         setSentRequests((prev) => prev.filter((req) => req.id !== data.requestId));

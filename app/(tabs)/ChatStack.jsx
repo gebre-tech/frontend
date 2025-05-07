@@ -49,6 +49,7 @@ export default function ChatStack() {
         component={Contacts} 
         options={{ 
           title: "Contacts",
+         // headerShown:false,
           headerLeftContainerStyle: { paddingLeft: 10 },
           headerBackground: () => (
             <LinearGradient

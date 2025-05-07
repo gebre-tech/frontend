@@ -1,4 +1,3 @@
-// app/tabs/Contacts.jsx
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
@@ -9,7 +8,7 @@ import {
   TextInput,
   Alert,
   Image,
-  Pressable, // Added for long press
+  Pressable,
 } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -29,7 +28,7 @@ const ContactsScreen = ({ navigation }) => {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
-  const [selectedContactId, setSelectedContactId] = useState(null); // Track the selected contact for showing the remove icon
+  const [selectedContactId, setSelectedContactId] = useState(null);
   const parentNavigation = useNavigation();
   const { user, logout } = React.useContext(AuthContext);
   const [ws, setWs] = useState(null);
@@ -43,7 +42,13 @@ const ContactsScreen = ({ navigation }) => {
       const response = await axios.get(`${API_URL}/contacts/list_with_profiles/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setContacts(response.data || []);
+      // Sort contacts alphabetically by first_name or username
+      const sortedContacts = (response.data || []).sort((a, b) => {
+        const nameA = (a.friend.user.first_name || a.friend.user.username || '').toLowerCase();
+        const nameB = (b.friend.user.first_name || b.friend.user.username || '').toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
+      setContacts(sortedContacts);
     } catch (error) {
       handleError(error);
     } finally {
@@ -62,7 +67,13 @@ const ContactsScreen = ({ navigation }) => {
           headers: { Authorization: `Bearer ${token}` },
           params: { query },
         });
-        setContacts(response.data.results || response.data || []);
+        // Sort search results alphabetically
+        const sortedContacts = (response.data.results || response.data || []).sort((a, b) => {
+          const nameA = (a.friend.user.first_name || a.friend.user.username || '').toLowerCase();
+          const nameB = (b.friend.user.first_name || b.friend.user.username || '').toLowerCase();
+          return nameA.localeCompare(nameB);
+        });
+        setContacts(sortedContacts);
       } catch (error) {
         handleError(error);
       } finally {
@@ -82,7 +93,6 @@ const ContactsScreen = ({ navigation }) => {
       try {
         const token = await AsyncStorage.getItem('token');
         if (!token) throw new Error('No authentication token found');
-
         navigation.navigate('ChatScreen', {
           senderId: user.id,
           contactId: friendId,
@@ -115,7 +125,7 @@ const ContactsScreen = ({ navigation }) => {
         headers: { Authorization: `Bearer ${token}` },
       });
       setContacts((prev) => prev.filter((contact) => contact.friend_id !== friendId));
-      setSelectedContactId(null); // Reset the selected contact after removal
+      setSelectedContactId(null);
       Alert.alert('Success', 'Friend removed successfully');
     } catch (error) {
       if (error.response?.status === 404) {
@@ -148,7 +158,6 @@ const ContactsScreen = ({ navigation }) => {
   const setupWebSocket = useCallback(async () => {
     const token = await AsyncStorage.getItem('token');
     if (!token) return;
-
     const wsInstance = new WebSocket(`ws://${API_HOST}/ws/contacts/?token=${token}`);
     wsInstance.onopen = () => console.log('Contacts WebSocket connected');
     wsInstance.onmessage = (e) => {
@@ -159,7 +168,15 @@ const ContactsScreen = ({ navigation }) => {
           setContacts((prev) => prev.filter((contact) => contact.friend_id !== data.friend_id));
           Alert.alert('Notification', `${data.friend_first_name} removed you as a friend`);
         } else if (data.type === 'friend_request_accepted') {
-          setContacts((prev) => [...prev, data.contact]);
+          setContacts((prev) => {
+            const newContacts = [...prev, data.contact];
+            // Sort after adding new contact
+            return newContacts.sort((a, b) => {
+              const nameA = (a.friend.user.first_name || a.friend.user.username || '').toLowerCase();
+              const nameB = (b.friend.user.first_name || b.friend.user.username || '').toLowerCase();
+              return nameA.localeCompare(nameB);
+            });
+          });
           Alert.alert(
             'Notification',
             `${data.contact.friend.user.username} accepted your friend request`
@@ -175,7 +192,6 @@ const ContactsScreen = ({ navigation }) => {
     };
     wsInstance.onclose = () => console.log('Contacts WebSocket closed');
     setWs(wsInstance);
-
     return () => {
       if (wsInstance) wsInstance.close();
     };
@@ -212,28 +228,24 @@ const ContactsScreen = ({ navigation }) => {
     const isOnline =
       item.is_online ||
       (item.friend.last_seen && new Date() - new Date(item.friend.last_seen) < 5 * 60 * 1000);
-  
-    const isSelected = selectedContactId === item.friend_id; // Check if this contact is selected
-  
-    // Prepare the name for the avatar fallback
+    const isSelected = selectedContactId === item.friend_id;
     const senderName = item.friend.user.first_name || item.friend.user.username || 'Unknown';
-  
     return (
       <Pressable
         style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-sm border-b border-gray-100 ${
-          isSelected ? 'bg-red-50' : '' // Highlight the row when selected
+          isSelected ? 'bg-red-50' : ''
         }`}
         onPress={() => {
           if (isSelected) {
-            setSelectedContactId(null); // Deselect if already selected
+            setSelectedContactId(null);
           } else {
-            startChat(item.friend_id, item.friend.user.username); // Start chat on normal press
+            startChat(item.friend_id, item.friend.user.username);
           }
         }}
         onLongPress={() => {
-          setSelectedContactId(item.friend_id); // Show remove icon on long press
+          setSelectedContactId(item.friend_id);
         }}
-        delayLongPress={300} // Adjust the long press delay (in milliseconds)
+        delayLongPress={300}
       >
         <TouchableOpacity
           style={tw`relative`}
@@ -272,7 +284,7 @@ const ContactsScreen = ({ navigation }) => {
         {isSelected && (
           <TouchableOpacity
             onPress={() => removeFriend(item.friend_id)}
-            style={tw`p-2`} // Add some padding for better touch area
+            style={tw`p-2`}
           >
             <Ionicons name="trash-outline" size={24} color="#EF4444" />
           </TouchableOpacity>
@@ -310,17 +322,22 @@ const ContactsScreen = ({ navigation }) => {
       {loading ? (
         <ActivityIndicator size="large" color="#007AFF" style={tw`flex-1 justify-center`} />
       ) : (
-        <FlatList
-          data={contacts}
-          renderItem={renderItem}
-          keyExtractor={(item) => item.friend_id.toString()}
-          ListEmptyComponent={
-            <Text style={tw`text-center mt-5 text-gray-500`}>
-              {searchText ? 'No contacts found' : 'No contacts available'}
-            </Text>
-          }
-          contentContainerStyle={tw`pb-4`}
-        />
+        <View style={tw`flex-1`}>
+          <Text style={tw`px-4 py-2 text-lg font-semibold text-gray-800`}>
+            Contacts ({contacts.length})
+          </Text>
+          <FlatList
+            data={contacts}
+            renderItem={renderItem}
+            keyExtractor={(item) => item.friend_id.toString()}
+            ListEmptyComponent={
+              <Text style={tw`text-center mt-5 text-gray-500`}>
+                {searchText ? 'No contacts found' : 'No contacts available'}
+              </Text>
+            }
+            contentContainerStyle={tw`pb-4`}
+          />
+        </View>
       )}
     </View>
   );

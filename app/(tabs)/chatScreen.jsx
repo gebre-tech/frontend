@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import 'react-native-get-random-values';
 import {
-  View, FlatList, TextInput, Text, TouchableOpacity,
-  TouchableWithoutFeedback, Keyboard, Image, Modal, Dimensions, StyleSheet, Alert
+  View, FlatList, TextInput, Text, TouchableOpacity, Platform,
+  TouchableWithoutFeedback, Keyboard, Image, Dimensions, Alert, ActivityIndicator,
+  SafeAreaView, KeyboardAvoidingView, Animated, Pressable
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, FontAwesome, MaterialIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
@@ -16,6 +17,8 @@ import { Buffer } from 'buffer';
 import aesjs from 'aes-js';
 import { x25519 } from '@noble/curves/ed25519';
 import axios from 'axios';
+import tw from 'twrnc';
+import { Modalize } from 'react-native-modalize';
 import { API_HOST, API_URL, PLACEHOLDER_IMAGE_ICON, DEFAULT_AVATAR_ICON, REACTION_EMOJIS } from '../utils/constants';
 
 if (!global.crypto || !global.crypto.getRandomValues) {
@@ -28,163 +31,6 @@ const checkAESSupport = () => {
   console.log("(NOBRIDGE) CHECK AES-256-CBC exists:", aesExists);
   return aesExists;
 };
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' }, // Updated to a professional off-white
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 15,
-    backgroundColor: '#1a73e8',
-    backgroundImage: 'linear-gradient(to right, #1E90FF, #8A2BE2)',
-  },
-  backButton: {
-    marginRight: 10,
-  },
-  headerProfileContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  profileImageContainer: {
-    position: 'relative',
-    marginRight: 10,
-  },
-  headerProfileImage: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#e0e0e0',
-  },
-  onlineStatusRing: {
-    position: 'absolute',
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    borderWidth: 2,
-    borderColor: '#4CAF50',
-    top: -4,
-    left: -4,
-  },
-  headerTitleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginRight: 8,
-  },
-  messageContainer: {
-    padding: 10,
-    borderRadius: 10,
-    maxWidth: '80%',
-    marginBottom: 10,
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-  },
-  senderMessage: {
-    backgroundColor: '#D1FAE5', // Updated to a subtle teal
-    alignSelf: 'flex-end',
-    alignItems: 'flex-end',
-  },
-  receiverMessage: {
-    backgroundColor: '#E5E7EB', // Updated to a light gray
-    alignSelf: 'flex-start',
-    alignItems: 'flex-start',
-  },
-  messageText: { fontSize: 16, marginBottom: 5 },
-  imageMessage: { width: 200, height: 200, marginBottom: 5 },
-  videoMessage: { width: 200, height: 200, marginBottom: 5 },
-  messageTime: { fontSize: 12, color: '#888', alignSelf: 'flex-end' },
-  inputContainer: {
-    padding: 10,
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f0f0f0',
-    borderRadius: 25,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  pendingFileContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f0f0f0',
-    borderRadius: 10,
-    padding: 5,
-    marginBottom: 10,
-  },
-  pendingImage: {
-    width: 50,
-    height: 50,
-    borderRadius: 5,
-  },
-  pendingFileText: {
-    fontSize: 14,
-    color: '#333',
-    marginRight: 10,
-  },
-  removeFileButton: {
-    backgroundColor: '#ff4444',
-    borderRadius: 15,
-    width: 30,
-    height: 30,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  input: {
-    flex: 1,
-    fontSize: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    color: '#333',
-  },
-  sendButton: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#4CAF50',
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-  },
-  photoButton: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#2196F3',
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    marginRight: 5,
-  },
-  fullScreenContainer: {
-    flex: 1,
-    backgroundColor: '#000',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  fullScreenImage: {
-    width: Dimensions.get('window').width,
-    height: Dimensions.get('window').height,
-  },
-  closeButton: {
-    position: 'absolute',
-    top: 40,
-    right: 20,
-    zIndex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    borderRadius: 15,
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-});
 
 async function fetchReceiverPublicKey(receiverId, token) {
   try {
@@ -281,7 +127,7 @@ class NoiseNN {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
+          'Authorization': `Bearer ${this.token}`,
         },
         body: JSON.stringify({ public_key: publicKeyHex }),
       });
@@ -321,116 +167,219 @@ class NoiseNN {
   }
 }
 
-const ImageMessage = memo(({ uri, style, nonce, messageKey, ephemeralKey, noise, onPress }) => {
+const FileMessage = memo(({ uri, fileType, fileName, fileSize, nonce, messageKey, ephemeralKey, noise, onFullScreen, onDownload, formatFileSize, isDownloaded, localUri, onOpen }) => {
   const [isMounted, setIsMounted] = useState(false);
   const [error, setError] = useState(null);
   const [decryptedUri, setDecryptedUri] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const videoRef = useRef(null);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  const screenWidth = Dimensions.get('window').width * 0.4; // 40% of screen width for inline media
+  const screenHeight = Dimensions.get('window').height * 0.3; // 30% of screen height for inline media
+  const fileNameWidth = Dimensions.get('window').width * 0.6; // 60% of screen width for file name
+
+  const wrapFileName = (name, maxWidth) => {
+    const words = name.split(/([._-])/);
+    const lines = [];
+    let currentLine = '';
+
+    words.forEach((word, index) => {
+      const testLine = currentLine + (currentLine ? '' : '') + word;
+      const testWidth = new TextEncoder().encode(testLine).length;
+
+      if (testWidth > maxWidth) {
+        if (currentLine) lines.push(currentLine);
+        currentLine = word;
+      } else {
+        currentLine = testLine;
+      }
+
+      if (index === words.length - 1) {
+        lines.push(currentLine);
+      }
+    });
+
+    return lines.join('\n');
+  };
+
+  const wrappedFileName = wrapFileName(fileName, fileNameWidth);
+
+  const handlePressIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.95,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+  };
 
   useEffect(() => {
-    const decryptImage = async () => {
+    const decryptFile = async () => {
       try {
+        console.log("(NOBRIDGE) Decrypting file:", { uri, fileType, fileName, fileSize, nonce, ephemeralKey });
         if (!uri) throw new Error("Missing file URI");
-        if (!nonce || !ephemeralKey) {
-          setError("Image is encrypted but missing decryption keys");
+        if (!noise?.handshakeFinished) {
+          console.warn("(NOBRIDGE) Noise handshake not finished, skipping decryption");
           setDecryptedUri(uri);
           setIsMounted(true);
+          setIsLoading(false);
           return;
         }
+        if (!nonce || !ephemeralKey) {
+          console.warn("(NOBRIDGE) Missing nonce or ephemeralKey, using original URI");
+          setDecryptedUri(uri);
+          setIsMounted(true);
+          setIsLoading(false);
+          return;
+        }
+
         const { key } = await noise.generateMessageKey(ephemeralKey);
         const response = await fetch(uri);
+        if (!response.ok) throw new Error(`Failed to fetch file: ${response.statusText}`);
         const arrayBuffer = await response.arrayBuffer();
         const encryptedBytes = new Uint8Array(arrayBuffer);
         const iv = Buffer.from(nonce, 'hex');
         const aesCbc = new aesjs.ModeOfOperation.cbc(key, iv);
         const decryptedBytes = aesCbc.decrypt(encryptedBytes);
         const unpaddedBytes = aesjs.padding.pkcs7.strip(decryptedBytes);
-        const tempUri = `${FileSystem.cacheDirectory}decrypted_image_${Date.now()}.jpg`;
-        await FileSystem.writeAsStringAsync(tempUri, Buffer.from(unpaddedBytes).toString('base64'), {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        setDecryptedUri(tempUri);
-        setIsMounted(true);
-      } catch (e) {
-        setError(e.message || 'Failed to load image');
-      }
-    };
 
-    decryptImage();
-
-    return () => {
-      setIsMounted(false);
-      if (decryptedUri && decryptedUri !== uri) {
-        FileSystem.deleteAsync(decryptedUri).catch(() => {});
-      }
-    };
-  }, [uri, nonce, ephemeralKey]);
-
-  if (!isMounted || !decryptedUri) return <Text style={styles.messageText}>Loading image...</Text>;
-  if (error) return <Text style={styles.messageText}>{error}</Text>;
-
-  return (
-    <TouchableOpacity onPress={onPress}>
-      <Image source={{ uri: decryptedUri }} style={style} resizeMode="contain" />
-    </TouchableOpacity>
-  );
-});
-
-const VideoMessage = memo(({ uri, style, nonce, messageKey, ephemeralKey, noise }) => {
-  const [isMounted, setIsMounted] = useState(false);
-  const [error, setError] = useState(null);
-  const [decryptedUri, setDecryptedUri] = useState(null);
-
-  useEffect(() => {
-    const decryptVideo = async () => {
-      try {
-        if (!uri) throw new Error("Missing file URI");
-        if (!nonce || !ephemeralKey) {
-          setError("Video is encrypted but missing decryption keys");
-          setDecryptedUri(uri);
-          setIsMounted(true);
-          return;
+        let tempUri;
+        if (Platform.OS === 'web') {
+          const blob = new Blob([unpaddedBytes], { type: fileType });
+          tempUri = URL.createObjectURL(blob);
+          console.log("(NOBRIDGE) Web decryption successful, tempUri:", tempUri);
+        } else {
+          const extension = fileType.startsWith('image/') ? 'jpg' : fileType.startsWith('video/') ? 'mp4' : fileType.startsWith('audio/') ? 'mp3' : fileName.split('.').pop() || 'file';
+          tempUri = `${FileSystem.cacheDirectory}decrypted_file_${Date.now()}.${extension}`;
+          await FileSystem.writeAsStringAsync(tempUri, Buffer.from(unpaddedBytes).toString('base64'), {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          console.log("(NOBRIDGE) Native decryption successful, tempUri:", tempUri);
         }
-        const { key } = await noise.generateMessageKey(ephemeralKey);
-        const response = await fetch(uri);
-        const arrayBuffer = await response.arrayBuffer();
-        const encryptedBytes = new Uint8Array(arrayBuffer);
-        const iv = Buffer.from(nonce, 'hex');
-        const aesCbc = new aesjs.ModeOfOperation.cbc(key, iv);
-        const decryptedBytes = aesCbc.decrypt(encryptedBytes);
-        const unpaddedBytes = aesjs.padding.pkcs7.strip(decryptedBytes);
-        const tempUri = `${FileSystem.cacheDirectory}decrypted_video_${Date.now()}.mp4`;
-        await FileSystem.writeAsStringAsync(tempUri, Buffer.from(unpaddedBytes).toString('base64'), {
-          encoding: FileSystem.EncodingType.Base64,
-        });
+
         setDecryptedUri(tempUri);
         setIsMounted(true);
+        setIsLoading(false);
       } catch (e) {
-        setError(e.message || 'Failed to load video');
+        console.error("(NOBRIDGE) Decryption error:", e);
+        setError(e.message || 'Failed to load file');
+        setDecryptedUri(uri);
+        setIsMounted(true);
+        setIsLoading(false);
       }
     };
 
-    decryptVideo();
+    if (!isDownloaded) {
+      setDecryptedUri(null);
+      setIsMounted(true);
+      setIsLoading(false);
+      return;
+    }
+
+    if (localUri) {
+      setDecryptedUri(localUri);
+      setIsMounted(true);
+      setIsLoading(false);
+      return;
+    }
+
+    decryptFile();
 
     return () => {
       setIsMounted(false);
-      if (decryptedUri && decryptedUri !== uri) {
-        FileSystem.deleteAsync(decryptedUri).catch(() => {});
+      if (decryptedUri && decryptedUri !== uri && !localUri) {
+        if (Platform.OS === 'web') {
+          URL.revokeObjectURL(decryptedUri);
+          console.log("(NOBRIDGE) Revoked temporary URL:", decryptedUri);
+        } else {
+          FileSystem.deleteAsync(decryptedUri).catch((e) => console.error("(NOBRIDGE) Cleanup error:", e));
+        }
       }
     };
-  }, [uri, nonce, ephemeralKey]);
+  }, [uri, nonce, ephemeralKey, fileType, fileName, fileSize, noise, isDownloaded, localUri]);
 
-  if (!isMounted || !decryptedUri) return <Text style={styles.messageText}>Loading video...</Text>;
-  if (error) return <Text style={styles.messageText}>{error}</Text>;
+  if (isLoading) {
+    return (
+      <View style={tw`flex-row items-center p-2 bg-white rounded-lg shadow-md`}>
+        <ActivityIndicator size="large" color="#666" />
+        <Text style={tw`text-gray-800 ml-2`}>Loading file...</Text>
+      </View>
+    );
+  }
+
+  if (!isMounted || (!decryptedUri && isDownloaded)) {
+    return <Text style={tw`text-gray-800`}>Loading file...</Text>;
+  }
+
+  if (error) {
+    return <Text style={tw`text-gray-800`}>{error}</Text>;
+  }
 
   return (
-    <Video
-      source={{ uri: decryptedUri }}
-      style={style}
-      useNativeControls
-      resizeMode="contain"
-      isMuted={true}
-      onError={(e) => setError(e.error?.message || 'Failed to play video')}
-    />
+    <Pressable onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={isDownloaded ? (fileType.startsWith('image/') || fileType.startsWith('video/') ? onFullScreen : onOpen) : null}>
+      <Animated.View style={[tw`bg-white rounded-lg shadow-md p-3`, { transform: [{ scale: scaleAnim }] }]}>
+        {isDownloaded && decryptedUri ? (
+          <>
+            {fileType.startsWith('image/') && (
+              <View>
+                <Image source={{ uri: decryptedUri }} style={{ width: screenWidth, height: screenHeight, borderRadius: 8 }} resizeMode="contain" />
+                <Text style={tw`text-gray-600 text-sm mt-2`}>{wrappedFileName}</Text>
+                <Text style={tw`text-gray-500 text-xs`}>{formatFileSize(fileSize)}</Text>
+              </View>
+            )}
+            {fileType.startsWith('video/') && (
+              <View>
+                <Video
+                  ref={videoRef}
+                  source={{ uri: decryptedUri }}
+                  style={{ width: screenWidth, height: screenHeight, borderRadius: 8 }}
+                  useNativeControls
+                  resizeMode="contain"
+                  isLooping
+                />
+                <Text style={tw`text-gray-600 text-sm mt-2`}>{wrappedFileName}</Text>
+                <Text style={tw`text-gray-500 text-xs`}>{formatFileSize(fileSize)}</Text>
+              </View>
+            )}
+            {fileType.startsWith('audio/') && (
+              <View>
+                <View style={tw`flex-row items-center bg-gray-100 p-2 rounded-lg`}>
+                  <Ionicons name="play-circle" size={30} color="#6200EA" onPress={() => videoRef.current?.playAsync()} />
+                  <Text style={tw`text-gray-800 ml-2 flex-1`}>{wrappedFileName}</Text>
+                </View>
+                <Text style={tw`text-gray-500 text-xs mt-1`}>{formatFileSize(fileSize)}</Text>
+              </View>
+            )}
+            {!['image/', 'video/', 'audio/'].some(prefix => fileType.startsWith(prefix)) && (
+              <View style={tw`flex-row items-center`}>
+                <MaterialIcons name="insert-drive-file" size={24} color="#6200EA" style={tw`mr-2`} />
+                <View style={tw`flex-1`}>
+                  <Text style={tw`text-blue-500 font-semibold text-base`}>{wrappedFileName}</Text>
+                  <Text style={tw`text-gray-500 text-xs mt-1`}>Size: {formatFileSize(fileSize)}</Text>
+                </View>
+              </View>
+            )}
+          </>
+        ) : (
+          <View style={tw`flex-row items-center`}>
+            <MaterialIcons name="insert-drive-file" size={24} color="#6200EA" style={tw`mr-2`} />
+            <View style={tw`flex-1`}>
+              <Text style={tw`text-gray-800 font-semibold text-base`}>{wrappedFileName}</Text>
+              <Text style={tw`text-gray-500 text-xs mt-1`}>Size: {formatFileSize(fileSize)}</Text>
+            </View>
+            <TouchableOpacity onPress={onDownload}>
+              <Ionicons name="cloud-download" size={24} color="#6200EA" />
+            </TouchableOpacity>
+          </View>
+        )}
+      </Animated.View>
+    </Pressable>
   );
 });
 
@@ -447,18 +396,48 @@ export default function ChatScreen() {
   const [pendingFile, setPendingFile] = useState(null);
   const socketRef = useRef(null);
   const flatListRef = useRef(null);
+  const modalizeRef = useRef(null);
   const [token, setToken] = useState(null);
-  const [fullScreenImage, setFullScreenImage] = useState(null);
+  const [fullScreenMedia, setFullScreenMedia] = useState(null);
+  const [downloading, setDownloading] = useState({});
+  const [downloadProgress, setDownloadProgress] = useState({});
+  const [downloadedFiles, setDownloadedFiles] = useState(new Map());
   const noiseRef = useRef(null);
   const messageCache = useRef(new Set());
   const prevReceiverIdRef = useRef(null);
   const [friendProfile, setFriendProfile] = useState(null);
   const inputRef = useRef(null);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const storageKey = `downloaded_files_${senderId}_${contactId}`;
 
   useEffect(() => {
     checkAESSupport();
     navigation.setOptions({ headerShown: false });
+
+    const loadDownloadedFiles = async () => {
+      try {
+        const storedFiles = await AsyncStorage.getItem(storageKey);
+        if (storedFiles) {
+          const parsedFiles = new Map(JSON.parse(storedFiles));
+          setDownloadedFiles(parsedFiles);
+        }
+      } catch (error) {
+        console.error('Error loading downloaded files:', error);
+      }
+    };
+    loadDownloadedFiles();
   }, [navigation]);
+
+  useEffect(() => {
+    const saveDownloadedFiles = async () => {
+      try {
+        await AsyncStorage.setItem(storageKey, JSON.stringify([...downloadedFiles]));
+      } catch (error) {
+        console.error('Error saving downloaded files:', error);
+      }
+    };
+    saveDownloadedFiles();
+  }, [downloadedFiles]);
 
   const fetchFriendProfile = useCallback(async () => {
     if (!contactUsername) return;
@@ -481,7 +460,7 @@ export default function ChatScreen() {
 
   useEffect(() => {
     fetchFriendProfile();
-    const interval = setInterval(fetchFriendProfile, 30000); // Refresh every 30 seconds
+    const interval = setInterval(fetchFriendProfile, 30000);
     return () => clearInterval(interval);
   }, [fetchFriendProfile]);
 
@@ -544,7 +523,9 @@ export default function ChatScreen() {
     setMessages([]);
     setInputText('');
     setPendingFile(null);
-    setFullScreenImage(null);
+    setFullScreenMedia(null);
+    setDownloading({});
+    setDownloadProgress({});
     messageCache.current.clear();
     if (socketRef.current) {
       socketRef.current.close();
@@ -596,12 +577,14 @@ export default function ChatScreen() {
     socketRef.current.onmessage = async (event) => {
       try {
         const data = JSON.parse(event.data);
+        console.log("(NOBRIDGE) Received WebSocket message:", data);
         const messageId = `${data.timestamp || ''}${data.message || ''}${data.sender || ''}${data.receiver || ''}${data.file_url || ''}`;
         if (messageCache.current.has(messageId)) return;
         messageCache.current.add(messageId);
 
         if (data.messages) {
           const decryptedMessages = await Promise.all(data.messages.map(async msg => {
+            console.log("(NOBRIDGE) Processing message from history:", msg);
             if (msg.type === 'text' && msg.message && msg.nonce && msg.ephemeral_key) {
               try {
                 const { key } = await noiseRef.current.generateMessageKey(msg.ephemeral_key);
@@ -610,7 +593,7 @@ export default function ChatScreen() {
                 return { ...msg, message: "[Decryption Failed: " + e.message + "]" };
               }
             }
-            return msg;
+            return validateFileMessage(msg);
           }));
           setMessages(normalizeMessages(decryptedMessages.filter(msg => msg.type !== 'handshake')));
           scrollToBottom();
@@ -618,6 +601,7 @@ export default function ChatScreen() {
           (data.sender === senderIdState && data.receiver === receiverId) ||
           (data.sender === receiverId && data.receiver === senderIdState)
         ) {
+          console.log("(NOBRIDGE) Processing live message:", data);
           let decryptedMessage = { ...data };
           if (data.type === 'text' && data.message && data.nonce && data.ephemeral_key) {
             try {
@@ -626,6 +610,8 @@ export default function ChatScreen() {
             } catch (e) {
               decryptedMessage.message = "[Decryption Failed: " + e.message + "]";
             }
+          } else if (data.type && ['photo', 'video', 'file'].includes(data.type)) {
+            decryptedMessage = validateFileMessage(decryptedMessage);
           }
           if (decryptedMessage.type !== 'handshake') {
             setMessages(prev => [...prev, normalizeMessages([decryptedMessage])[0]]);
@@ -700,7 +686,9 @@ export default function ChatScreen() {
   }, []);
 
   const sendMessage = useCallback(async () => {
+    console.log("(NOBRIDGE) Attempting to send message, state:", { senderIdState, receiverId, socketReady: socketRef.current?.readyState, noiseHandshake: noiseRef.current?.handshakeFinished, inputText });
     if (!senderIdState || !receiverId || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN || !noiseRef.current?.handshakeFinished) {
+      console.warn("(NOBRIDGE) Cannot send message due to invalid state");
       Alert.alert('Cannot Send Message', 'Chat connection is not established. Please try again later.');
       return;
     }
@@ -726,7 +714,7 @@ export default function ChatScreen() {
         Alert.alert('Send Failed', 'Failed to send message: ' + error.message);
       }
     }
-  }, [senderIdState, receiverId, inputText, encryptMessage]);
+  }, [senderIdState, receiverId, inputText, encryptMessage, socketRef, noiseRef]);
 
   const sendFile = useCallback(async (fileData) => {
     if (!senderIdState || !receiverId || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN || !noiseRef.current?.handshakeFinished) {
@@ -734,7 +722,8 @@ export default function ChatScreen() {
       return;
     }
 
-    const { uri, fileName, mimeType, arrayBuffer } = fileData;
+    const { uri, fileName, mimeType, arrayBuffer, fileSize } = fileData;
+    console.log("(NOBRIDGE) Sending file with data:", { uri, fileName, mimeType, fileSize, arrayBufferLength: arrayBuffer.byteLength });
     try {
       const { encryptedData, nonce, ephemeralKey, messageKey } = await encryptFile(arrayBuffer);
       const metadata = {
@@ -742,12 +731,15 @@ export default function ChatScreen() {
         receiver: receiverId,
         file_name: fileName || `file_${Date.now()}`,
         file_type: mimeType || 'application/octet-stream',
+        file_size: fileSize || arrayBuffer.byteLength,
+        file_url: uri,
         nonce,
         ephemeral_key: ephemeralKey,
         message_key: messageKey,
-        type: mimeType.startsWith('image/') ? 'photo' : mimeType.startsWith('video/') ? 'video' : 'file',
+        type: mimeType.startsWith('image/') ? 'photo' : mimeType.startsWith('video/') ? 'video' : mimeType.startsWith('audio/') ? 'audio' : 'file',
         timestamp: new Date().toISOString(),
       };
+      console.log("(NOBRIDGE) Sending file metadata:", metadata);
       socketRef.current.send(JSON.stringify(metadata));
       await new Promise(resolve => setTimeout(resolve, 100));
       socketRef.current.send(encryptedData);
@@ -761,19 +753,55 @@ export default function ChatScreen() {
 
   const pickFile = useCallback(async () => {
     try {
-      const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
-      if (!result.canceled) {
-        const file = result.assets[0];
-        const { uri, name, mimeType } = file;
-        const base64Data = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-        const binaryString = atob(base64Data);
-        const arrayBuffer = new ArrayBuffer(binaryString.length);
-        const uint8Array = new Uint8Array(arrayBuffer);
-        for (let i = 0; i < binaryString.length; i++) uint8Array[i] = binaryString.charCodeAt(i);
+      const isWeb = Platform.OS === 'web';
+      let fileData;
 
-        const fileData = { uri, fileName: name, mimeType, arrayBuffer };
-        setPendingFile(fileData);
-        await sendFile(fileData);
+      if (isWeb) {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '*/*';
+        input.onchange = async (event) => {
+          const file = event.target.files[0];
+          if (!file) return;
+
+          const reader = new FileReader();
+          reader.onload = async (e) => {
+            const arrayBuffer = e.target.result;
+            const mimeType = file.type || 'application/octet-stream';
+            fileData = {
+              uri: URL.createObjectURL(file),
+              fileName: file.name,
+              mimeType,
+              arrayBuffer,
+              fileSize: file.size || arrayBuffer.byteLength,
+            };
+            console.log("(NOBRIDGE) Picked file (web):", fileData);
+            setPendingFile(fileData);
+          };
+          reader.readAsArrayBuffer(file);
+        };
+        input.click();
+      } else {
+        const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
+        if (!result.canceled) {
+          const file = result.assets[0];
+          const { uri, name, mimeType, size } = file;
+          const base64Data = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+          const binaryString = atob(base64Data);
+          const arrayBuffer = new ArrayBuffer(binaryString.length);
+          const uint8Array = new Uint8Array(arrayBuffer);
+          for (let i = 0; i < binaryString.length; i++) uint8Array[i] = binaryString.charCodeAt(i);
+
+          fileData = { 
+            uri, 
+            fileName: name, 
+            mimeType, 
+            arrayBuffer, 
+            fileSize: size || arrayBuffer.byteLength
+          };
+          console.log("(NOBRIDGE) Picked file (native):", fileData);
+          setPendingFile(fileData);
+        }
       }
     } catch (error) {
       console.error("(NOBRIDGE) ERROR pickFile Error:", error);
@@ -790,8 +818,12 @@ export default function ChatScreen() {
       let type = msg.type || 'text';
       if (msg.file_type?.startsWith('image/')) type = 'photo';
       else if (msg.file_type?.startsWith('video/')) type = 'video';
+      else if (msg.file_type?.startsWith('audio/')) type = 'audio';
       else if (msg.file_type) type = 'file';
       else if (msg.message || msg.content) type = 'text';
+
+      const fileSize = msg.file_size || (msg.arrayBuffer ? msg.arrayBuffer.byteLength : null);
+      console.log("(NOBRIDGE) Normalizing message:", { msg, fileSize });
 
       return {
         ...msg,
@@ -800,10 +832,21 @@ export default function ChatScreen() {
         type,
         file_url: fileUrl,
         file_name: msg.file_name || (fileUrl ? fileUrl.split('/').pop() : null),
-        file_type: msg.file_type || (fileUrl && fileUrl.includes('.mp4') ? 'video/mp4' : null),
+        file_type: msg.file_type || (fileUrl && fileUrl.includes('.mp4') ? 'video/mp4' : 'application/octet-stream'),
+        file_size: fileSize,
+        nonce: msg.nonce,
+        ephemeral_key: msg.ephemeral_key,
       };
     });
   }, []);
+
+  const validateFileMessage = (msg) => {
+    if (['photo', 'video', 'audio', 'file'].includes(msg.type) && (!msg.file_url || !msg.file_type)) {
+      console.warn("(NOBRIDGE) Invalid file message, missing file_url or file_type:", msg);
+      return { ...msg, message: "Failed to load file (missing data)" };
+    }
+    return msg;
+  };
 
   const scrollToBottom = useCallback(() => {
     flatListRef.current?.scrollToEnd({ animated: true });
@@ -811,40 +854,176 @@ export default function ChatScreen() {
 
   const formatTimestamp = useCallback((timestamp) => {
     const date = new Date(timestamp.replace(/[\u00A0]/g, ' '));
-    return isNaN(date.getTime()) ? 'Invalid time' : `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+    return isNaN(date.getTime()) ? 'Invalid time' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }, []);
 
-  const openFile = useCallback(async (url, nonce, ephemeralKey) => {
+  const formatFileSize = useCallback((bytes) => {
+    if (!bytes && bytes !== 0) {
+      console.warn("(NOBRIDGE) File size is falsy:", bytes);
+      return 'Unknown';
+    }
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let size = parseFloat(bytes);
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex++;
+    }
+    return `${size.toFixed(2)} ${units[unitIndex]}`;
+  }, []);
+
+  const openFile = useCallback(async (uri) => {
     try {
-      if (!nonce || !ephemeralKey) {
-        if (await Linking.canOpenURL(url)) await Linking.openURL(url);
-        return;
+      if (await Linking.canOpenURL(uri)) {
+        await Linking.openURL(uri);
+      } else {
+        Alert.alert('File Open Failed', 'Unable to open the file.');
       }
-      const { key } = await noiseRef.current.generateMessageKey(ephemeralKey);
-      const response = await fetch(url);
-      const arrayBuffer = await response.arrayBuffer();
-      const encryptedBytes = new Uint8Array(arrayBuffer);
-      const iv = Buffer.from(nonce, 'hex');
-      const aesCbc = new aesjs.ModeOfOperation.cbc(key, iv);
-      const decryptedBytes = aesCbc.decrypt(encryptedBytes);
-      const unpaddedBytes = aesjs.padding.pkcs7.strip(decryptedBytes);
-      const tempUri = `${FileSystem.cacheDirectory}decrypted_file_${Date.now()}`;
-      await FileSystem.writeAsStringAsync(tempUri, Buffer.from(unpaddedBytes).toString('base64'), {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      if (await Linking.canOpenURL(tempUri)) await Linking.openURL(tempUri);
     } catch (error) {
-      console.error("(NOBRIDGE) ERROR Failed to open decrypted file:", error);
+      console.error("(NOBRIDGE) ERROR Failed to open file:", error);
       Alert.alert('File Open Failed', 'Failed to open file: ' + error.message);
+    }
+  }, []);
+
+  const downloadFile = useCallback(async (uri, fileName, nonce, ephemeralKey, fileType, messageId) => {
+    setDownloading(prev => ({ ...prev, [messageId]: true }));
+    setDownloadProgress(prev => ({ ...prev, [messageId]: 0 }));
+
+    try {
+      let downloadUri = uri;
+      let decryptedBytes;
+
+      if (nonce && ephemeralKey) {
+        const { key } = await noiseRef.current.generateMessageKey(ephemeralKey);
+        const response = await fetch(uri);
+        if (!response.ok) throw new Error(`Failed to fetch file: ${response.statusText}`);
+
+        const contentLength = response.headers.get('content-length');
+        const total = contentLength ? parseInt(contentLength, 10) : 0;
+        let loaded = 0;
+
+        const reader = response.body.getReader();
+        const chunks = [];
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          chunks.push(value);
+          loaded += value.length;
+
+          if (total > 0) {
+            const progress = Math.round((loaded / total) * 100);
+            setDownloadProgress(prev => ({ ...prev, [messageId]: progress }));
+          }
+        }
+
+        const encryptedBytes = new Uint8Array(
+          chunks.reduce((acc, chunk) => acc + chunk.length, 0)
+        );
+        let offset = 0;
+        for (const chunk of chunks) {
+          encryptedBytes.set(chunk, offset);
+          offset += chunk.length;
+        }
+
+        const iv = Buffer.from(nonce, 'hex');
+        const aesCbc = new aesjs.ModeOfOperation.cbc(key, iv);
+        decryptedBytes = aesCbc.decrypt(encryptedBytes);
+        decryptedBytes = aesjs.padding.pkcs7.strip(decryptedBytes);
+
+        if (Platform.OS === 'web') {
+          const blob = new Blob([decryptedBytes], { type: fileType });
+          downloadUri = URL.createObjectURL(blob);
+        } else {
+          const extension = fileType.startsWith('image/') ? 'jpg' : fileType.startsWith('video/') ? 'mp4' : fileType.startsWith('audio/') ? 'mp3' : fileName.split('.').pop() || 'file';
+          downloadUri = `${FileSystem.documentDirectory || FileSystem.cacheDirectory}downloaded_${Date.now()}.${extension}`;
+          await FileSystem.writeAsStringAsync(downloadUri, Buffer.from(decryptedBytes).toString('base64'), {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+        }
+      } else {
+        const response = await fetch(uri);
+        const contentLength = response.headers.get('content-length');
+        const total = contentLength ? parseInt(contentLength, 10) : 0;
+        let loaded = 0;
+
+        const reader = response.body.getReader();
+        const chunks = [];
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          chunks.push(value);
+          loaded += value.length;
+
+          if (total > 0) {
+            const progress = Math.round((loaded / total) * 100);
+            setDownloadProgress(prev => ({ ...prev, [messageId]: progress }));
+          }
+        }
+
+        decryptedBytes = new Uint8Array(
+          chunks.reduce((acc, chunk) => acc + chunk.length, 0)
+        );
+        let offset = 0;
+        for (const chunk of chunks) {
+          decryptedBytes.set(chunk, offset);
+          offset += chunk.length;
+        }
+
+        if (Platform.OS === 'web') {
+          const blob = new Blob([decryptedBytes], { type: fileType });
+          downloadUri = URL.createObjectURL(blob);
+        } else {
+          const extension = fileType.startsWith('image/') ? 'jpg' : fileType.startsWith('video/') ? 'mp4' : fileType.startsWith('audio/') ? 'mp3' : fileName.split('.').pop() || 'file';
+          downloadUri = `${FileSystem.documentDirectory || FileSystem.cacheDirectory}downloaded_${Date.now()}.${extension}`;
+          await FileSystem.writeAsStringAsync(downloadUri, Buffer.from(decryptedBytes).toString('base64'), {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+        }
+      }
+
+      setDownloadedFiles((prev) => {
+        const newMap = new Map(prev);
+        newMap.set(uri, downloadUri);
+        return newMap;
+      });
+
+      if (Platform.OS === 'web') {
+        const blob = await (await fetch(downloadUri)).blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        Alert.alert('File Downloaded', `File saved to ${downloadUri}`);
+      }
+    } catch (error) {
+      console.error("(NOBRIDGE) ERROR Failed to download file:", error);
+      Alert.alert('Download Failed', 'Failed to download file: ' + error.message);
+    } finally {
+      setDownloading(prev => {
+        const newState = { ...prev };
+        delete newState[messageId];
+        return newState;
+      });
+      setDownloadProgress(prev => {
+        const newState = { ...prev };
+        delete newState[messageId];
+        return newState;
+      });
     }
   }, []);
 
   const handleContainerPress = (event) => {
     const { locationY } = event.nativeEvent;
-    const inputAreaHeight = 100; // Approximate height of input container
+    const inputAreaHeight = 100;
     const screenHeight = Dimensions.get('window').height;
-    
-    // Only dismiss keyboard if the tap is outside the input area
+
     if (locationY < screenHeight - inputAreaHeight) {
       Keyboard.dismiss();
     }
@@ -854,116 +1033,267 @@ export default function ChatScreen() {
     inputRef.current?.focus();
   };
 
-  return (
-    <View style={styles.container}>
-      <TouchableWithoutFeedback onPress={handleContainerPress}>
-        <View style={{ flex: 1 }}>
-          <View style={styles.header}>
-            <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-              <Ionicons name="arrow-back" size={24} color="white" />
-            </TouchableOpacity>
+  const getFileIcon = (fileType) => {
+    if (fileType?.startsWith('image/')) return 'image';
+    if (fileType?.startsWith('video/')) return 'video';
+    if (fileType?.startsWith('audio/')) return 'mic';
+    if (fileType?.includes('pdf')) return 'picture-as-pdf';
+    if (fileType?.includes('document') || fileType?.includes('msword') || fileType?.includes('text')) return 'description';
+    return 'insert-drive-file';
+  };
+
+  const openFilePreview = (file) => {
+    console.log("(NOBRIDGE) Opening file preview:", file);
+    setFullScreenMedia({ uri: file.url, type: file.type === 'photo' ? 'photo' : 'video' });
+    modalizeRef.current?.open();
+  };
+
+  const closeFilePreview = () => {
+    setFullScreenMedia(null);
+    modalizeRef.current?.close();
+  };
+
+  const wrapText = (text, maxWidth) => {
+    const words = text.split(' ');
+    const lines = [];
+    let currentLine = '';
+
+    words.forEach((word, index) => {
+      const testLine = currentLine + (currentLine ? ' ' : '') + word;
+      const testWidth = new TextEncoder().encode(testLine).length;
+
+      if (testWidth > maxWidth) {
+        lines.push(currentLine);
+        currentLine = word;
+      } else {
+        currentLine = testLine;
+      }
+
+      if (index === words.length - 1) {
+        lines.push(currentLine);
+      }
+    });
+
+    return lines.join('\n');
+  };
+
+  const renderMessage = ({ item, index }) => {
+    const isCurrentUser = item.sender === senderIdState;
+    const messageId = `${item.timestamp}-${item.sender}-${index}`;
+    const isDownloaded = downloadedFiles.has(item.file_url);
+    const localUri = downloadedFiles.get(item.file_url);
+    const screenWidth = Dimensions.get('window').width * 0.75; // 75% of screen width as max message width
+    const wrappedMessage = item.type === 'text' ? wrapText(item.message, screenWidth) : item.message;
+
+    console.log("(NOBRIDGE) Rendering message:", item);
+
+    return (
+      <Animated.View style={[tw`flex-row mb-2 ${isCurrentUser ? 'justify-end' : 'justify-start'} px-4`, { opacity: fadeAnim }]}>
+        <View style={tw`max-w-[75%] flex-row ${isCurrentUser ? 'flex-row-reverse' : ''}`}>
+          {!isCurrentUser && (
             <TouchableOpacity
-              style={styles.headerProfileContainer}
               onPress={() => navigation.navigate('FriendProfile', { username: contactUsername })}
             >
-              <View style={styles.profileImageContainer}>
-                <Image
-                  source={{ uri: friendProfile?.profile_picture || DEFAULT_AVATAR_ICON }}
-                  style={styles.headerProfileImage}
-                  resizeMode="cover"
-                  onError={() => console.log("Failed to load profile picture")}
+              <Image
+                source={{ uri: friendProfile?.profile_picture || DEFAULT_AVATAR_ICON }}
+                style={tw`w-8 h-8 rounded-full mr-2`}
+              />
+            </TouchableOpacity>
+          )}
+          <View
+            style={tw`p-3 rounded-2xl shadow-md ${
+              isCurrentUser ? 'bg-blue-500' : 'bg-white'
+            }`}
+          >
+            {!isCurrentUser && (
+              <Text style={tw`text-xs font-semibold text-gray-600 mb-1`}>
+                {friendProfile?.user?.first_name || contactUsername || 'Unknown User'}
+              </Text>
+            )}
+            {item.type === 'text' && (
+              <Text style={tw`${isCurrentUser ? 'text-white text-base font-medium' : 'text-gray-800 text-base font-medium'}`}>
+                {wrappedMessage}
+              </Text>
+            )}
+            {(item.type === 'photo' || item.type === 'video' || item.type === 'audio' || item.type === 'file') && (
+              <View style={tw`mt-2`}>
+                <FileMessage
+                  uri={item.file_url}
+                  fileType={item.file_type}
+                  fileName={item.file_name}
+                  fileSize={item.file_size}
+                  nonce={item.nonce}
+                  messageKey={item.message_key}
+                  ephemeralKey={item.ephemeral_key}
+                  noise={noiseRef.current}
+                  formatFileSize={formatFileSize}
+                  isDownloaded={isCurrentUser || isDownloaded}
+                  localUri={localUri}
+                  onFullScreen={() => {
+                    if (item.file_type?.startsWith('image/') || item.file_type?.startsWith('video/')) {
+                      openFilePreview({
+                        url: localUri || item.file_url,
+                        type: item.type,
+                      });
+                    }
+                  }}
+                  onDownload={() => downloadFile(item.file_url, item.file_name, item.nonce, item.ephemeral_key, item.file_type, messageId)}
+                  onOpen={() => openFile(localUri)}
                 />
-                {friendProfile?.is_online && (
-                  <View style={styles.onlineStatusRing} />
+                {!isCurrentUser && !isDownloaded && downloading[messageId] && (
+                  <View style={tw`mt-2`}>
+                    <View style={tw`bg-gray-200 rounded-full h-2 w-full`}>
+                      <View
+                        style={[tw`bg-blue-500 h-2 rounded-full`, { width: `${downloadProgress[messageId] || 0}%` }]}
+                      />
+                    </View>
+                    <Text style={tw`text-gray-500 text-xs mt-1 text-center`}>
+                      Downloading... {downloadProgress[messageId] || 0}%
+                    </Text>
+                  </View>
                 )}
-              </View>
-              <View style={styles.headerTitleContainer}>
-                <Text style={styles.headerTitle}>
-                  {friendProfile?.user?.first_name || contactUsername || 'Unknown User'}
-                </Text>
-              </View>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => navigation.goBack()}>
-              <Ionicons name="ellipsis-vertical" size={24} color="white" />
-            </TouchableOpacity>
-          </View>
-
-          <FlatList
-            ref={flatListRef}
-            data={messages}
-            renderItem={({ item }) => (
-              <View style={[
-                styles.messageContainer,
-                item.sender === senderIdState ? styles.senderMessage : styles.receiverMessage
-              ]}>
-                {item.type === 'photo' && item.file_url ? (
-                  <ImageMessage
-                    uri={item.file_url}
-                    style={styles.imageMessage}
-                    nonce={item.nonce}
-                    messageKey={item.message_key}
-                    ephemeralKey={item.ephemeral_key}
-                    noise={noiseRef.current}
-                    onPress={() => setFullScreenImage(item.file_url)}
-                  />
-                ) : item.type === 'video' && item.file_url ? (
-                  <VideoMessage
-                    uri={item.file_url}
-                    style={styles.videoMessage}
-                    nonce={item.nonce}
-                    messageKey={item.message_key}
-                    ephemeralKey={item.ephemeral_key}
-                    noise={noiseRef.current}
-                  />
-                ) : item.type === 'file' && item.file_url ? (
-                  <TouchableOpacity onPress={() => openFile(item.file_url, item.nonce, item.ephemeral_key)}>
-                    <Text style={styles.messageText}>File: {item.file_name}</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <Text style={styles.messageText}>{item.message}</Text>
-                )}
-                <Text style={styles.messageTime}>{formatTimestamp(item.timestamp)}</Text>
               </View>
             )}
-            keyExtractor={(item, index) => `${item.timestamp}-${item.sender}-${index}`}
-            contentContainerStyle={{ paddingBottom: 20 }}
-            initialNumToRender={6}
-            maxToRenderPerBatch={6}
-            windowSize={3}
-            removeClippedSubviews={true}
-            keyboardShouldPersistTaps="handled"
-          />
+            <Text style={tw`text-xs ${isCurrentUser ? 'text-white/70' : 'text-gray-500'} mt-1 text-right`}>
+              {formatTimestamp(item.timestamp)}
+            </Text>
+          </View>
+        </View>
+      </Animated.View>
+    );
+  };
 
-          <View style={styles.inputContainer}>
-            {pendingFile && (
-              <View style={styles.pendingFileContainer}>
-                {pendingFile.mimeType.startsWith('image/') ? (
-                  <Image source={{ uri: pendingFile.uri }} style={styles.pendingImage} />
-                ) : pendingFile.mimeType.startsWith('video/') ? (
-                  <Video
-                    source={{ uri: pendingFile.uri }}
-                    style={styles.pendingImage}
-                    useNativeControls
-                    resizeMode="contain"
-                    isMuted={true}
+  const renderPendingFile = () => {
+    if (!pendingFile) return null;
+    console.log("(NOBRIDGE) Rendering pending file:", pendingFile);
+
+    const screenWidth = Dimensions.get('window').width * 0.6;
+    const wrapFileName = (name, maxWidth) => {
+      const words = name.split(/([._-])/);
+      const lines = [];
+      let currentLine = '';
+
+      words.forEach((word, index) => {
+        const testLine = currentLine + (currentLine ? '' : '') + word;
+        const testWidth = new TextEncoder().encode(testLine).length;
+
+        if (testWidth > maxWidth) {
+          if (currentLine) lines.push(currentLine);
+          currentLine = word;
+        } else {
+          currentLine = testLine;
+        }
+
+        if (index === words.length - 1) {
+          lines.push(currentLine);
+        }
+      });
+
+      return lines.join('\n');
+    };
+
+    const wrappedFileName = wrapFileName(pendingFile.fileName, screenWidth);
+
+    return (
+      <View style={tw`flex-row items-center bg-white rounded-lg p-2 mx-4 mb-2 shadow-md`}>
+        {pendingFile.mimeType?.startsWith('image/') ? (
+          <Image source={{ uri: pendingFile.uri }} style={tw`w-12 h-12 rounded-md mr-2`} resizeMode="contain" />
+        ) : pendingFile.mimeType?.startsWith('video/') ? (
+          <Video source={{ uri: pendingFile.uri }} style={tw`w-12 h-12 rounded-md mr-2`} resizeMode="contain" />
+        ) : pendingFile.mimeType?.startsWith('audio/') ? (
+          <Ionicons name="mic" size={24} color="#6200EA" style={tw`mr-2`} />
+        ) : (
+          <MaterialIcons name={getFileIcon(pendingFile.mimeType)} size={24} color="#6200EA" style={tw`mr-2`} />
+        )}
+        <View style={tw`flex-1`}>
+          <Text style={tw`text-gray-800 text-base font-medium`}>{wrappedFileName}</Text>
+          <Text style={tw`text-gray-600 text-xs`}>Size: {formatFileSize(pendingFile.fileSize)}</Text>
+        </View>
+        <TouchableOpacity onPress={() => setPendingFile(null)} style={tw`mr-2`}>
+          <Ionicons name="close" size={20} color="#6200EA" />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => sendFile(pendingFile)} style={tw`bg-blue-500 rounded-full p-2`}>
+          <Ionicons name="send" size={20} color="white" />
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  useEffect(() => {
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [messages]);
+
+  return (
+    <SafeAreaView style={tw`flex-1 bg-gray-100`}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={tw`flex-1`}
+      >
+        <TouchableWithoutFeedback onPress={handleContainerPress}>
+          <View style={tw`flex-1`}>
+            <View style={tw`bg-[#1a73e8] p-2 flex-row items-center justify-between h-16 shadow-md`}>
+              <View style={tw`flex-row items-center flex-1`}>
+                <TouchableOpacity
+                  style={tw`mr-3`}
+                  onPress={() => navigation.navigate('FriendProfile', { username: contactUsername })}
+                >
+                  <Image
+                    source={{ uri: friendProfile?.profile_picture || DEFAULT_AVATAR_ICON }}
+                    style={tw`w-10 h-10 rounded-full border-2 border-white`}
+                    onError={() => console.log("Failed to load profile picture")}
                   />
-                ) : (
-                  <Text style={styles.pendingFileText}>{pendingFile.fileName}</Text>
-                )}
-                <TouchableOpacity style={styles.removeFileButton} onPress={() => setPendingFile(null)}>
-                  <Ionicons name="close" size={20} color="#fff" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={tw`flex-1`}
+                  onPress={() => navigation.navigate('FriendProfile', { username: contactUsername })}
+                >
+                  <Text style={tw`text-lg font-bold text-white`}>
+                    {friendProfile?.user?.first_name || contactUsername || 'Unknown User'}
+                  </Text>
+                  <Text style={tw`text-xs text-white/70`}>
+                    {friendProfile?.is_online ? 'Online' : 'Offline'}
+                  </Text>
                 </TouchableOpacity>
               </View>
-            )}
-            <View style={styles.inputRow}>
-              <TouchableOpacity style={styles.photoButton} onPress={pickFile}>
-                <Ionicons name="attach" size={24} color="#fff" />
+              <TouchableOpacity onPress={() => navigation.goBack()}>
+                <Ionicons name="arrow-back" size={24} color="white" />
+              </TouchableOpacity>
+            </View>
+
+            <FlatList
+              ref={flatListRef}
+              data={messages}
+              renderItem={renderMessage}
+              keyExtractor={(item, index) => `${item.timestamp}-${item.sender}-${index}`}
+              contentContainerStyle={tw`pb-20`}
+              initialNumToRender={6}
+              maxToRenderPerBatch={6}
+              windowSize={3}
+              removeClippedSubviews={true}
+              keyboardShouldPersistTaps="handled"
+              ListEmptyComponent={
+                <View style={tw`flex-1 justify-center items-center`}>
+                  <Text style={tw`text-gray-500 text-lg`}>Start the conversation!</Text>
+                </View>
+              }
+              onContentSizeChange={() => scrollToBottom()}
+              onLayout={() => scrollToBottom()}
+            />
+
+            {renderPendingFile()}
+
+            <View style={tw`flex-row items-center p-3 bg-white border-t border-gray-200 shadow-md`}>
+              <TouchableOpacity onPress={pickFile} style={tw`mr-3`}>
+                <Ionicons name="attach" size={24} color="#6200EA" />
               </TouchableOpacity>
               <TextInput
                 ref={inputRef}
-                style={styles.input}
+                style={tw`flex-1 bg-gray-100 rounded-full px-4 py-2.5 text-gray-800 shadow-sm`}
                 placeholder="Type a message..."
-                placeholderTextColor="#888"
                 value={inputText}
                 onChangeText={setInputText}
                 onSubmitEditing={sendMessage}
@@ -972,35 +1302,47 @@ export default function ChatScreen() {
                 returnKeyType="send"
                 multiline={true}
               />
-              <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
-                <Ionicons name="send" size={24} color="#fff" />
+              <TouchableOpacity onPress={sendMessage} style={tw`ml-3`} disabled={!inputText.trim()}>
+                <Ionicons name="send" size={24} color="#6200EA" />
               </TouchableOpacity>
             </View>
           </View>
-        </View>
-      </TouchableWithoutFeedback>
+        </TouchableWithoutFeedback>
 
-      <Modal
-        visible={!!fullScreenImage}
-        transparent={false}
-        animationType="fade"
-        onRequestClose={() => setFullScreenImage(null)}
-      >
-        <View style={styles.fullScreenContainer}>
-          <TouchableOpacity style={styles.closeButton} onPress={() => setFullScreenImage(null)}>
-            <Ionicons name="close" size={30} color="#fff" />
-          </TouchableOpacity>
-          <ImageMessage
-            uri={fullScreenImage}
-            style={styles.fullScreenImage}
-            nonce={messages.find(m => m.file_url === fullScreenImage)?.nonce}
-            messageKey={messages.find(m => m.file_url === fullScreenImage)?.message_key}
-            ephemeralKey={messages.find(m => m.file_url === fullScreenImage)?.ephemeral_key}
-            noise={noiseRef.current}
-            onPress={() => setFullScreenImage(null)}
-          />
-        </View>
-      </Modal>
-    </View>
+        <Modalize
+          ref={modalizeRef}
+          adjustToContentHeight={false}
+          snapPoint={Dimensions.get('window').height * 0.4}
+          modalHeight={Dimensions.get('window').height}
+          handlePosition="outside"
+          onClose={() => setFullScreenMedia(null)}
+        >
+          <View style={tw`flex-1 bg-black justify-center items-center p-4`}>
+            <TouchableOpacity
+              style={tw`absolute top-4 right-4 z-10 bg-black/50 rounded-full p-2`}
+              onPress={closeFilePreview}
+            >
+              <Ionicons name="close" size={30} color="white" />
+            </TouchableOpacity>
+            {fullScreenMedia?.type === 'photo' && (
+              <Image
+                source={{ uri: fullScreenMedia.uri }}
+                style={tw`w-full h-full`}
+                resizeMode="contain"
+              />
+            )}
+            {fullScreenMedia?.type === 'video' && (
+              <Video
+                source={{ uri: fullScreenMedia.uri }}
+                style={tw`w-full h-full`}
+                useNativeControls
+                resizeMode="contain"
+                isLooping
+              />
+            )}
+          </View>
+        </Modalize>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }

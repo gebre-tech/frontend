@@ -6,6 +6,7 @@ import { ThemeProvider } from '../context/ThemeContext';
 import Layout from './_layout';
 const App = () => {
   return ( 
+    <GestureHandlerRootView style={{ flex: 1 }}>
        <SafeAreaProvider>
       <ThemeProvider>
       
@@ -15,6 +16,7 @@ const App = () => {
         
       </ThemeProvider>
     </SafeAreaProvider>
+</GestureHandlerRootView>
   );
 };
 

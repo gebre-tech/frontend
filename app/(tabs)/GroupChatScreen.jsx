@@ -88,12 +88,18 @@ const GroupChatScreen = () => {
       const groupData = response.data || [];
       const group = groupData.find(g => g.id === groupId);
       if (group && group.profile_picture) {
-        setGroupProfilePicture(`${API_URL}${group.profile_picture}`);
+        let picUrl = group.profile_picture;
+        if (!picUrl.startsWith('http')) {
+          // Ensure absolute URL
+          picUrl = `${API_URL}${picUrl}`;
+        }
+        setGroupProfilePicture(picUrl);
       } else {
         setGroupProfilePicture(null);
       }
     } catch (error) {
       console.error('Error fetching group profile picture:', error);
+      setGroupProfilePicture(null);
     }
   }, [groupId]);
 

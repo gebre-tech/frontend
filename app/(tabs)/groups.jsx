@@ -27,6 +27,12 @@ const Groups = () => {
   const { user } = React.useContext(AuthContext);
   const ws = useRef(null);
 
+  const processGroupProfilePicture = (profilePicture) => {
+    if (!profilePicture) return null;
+    // Ensure absolute URL
+    return profilePicture.startsWith('http') ? profilePicture : `${API_URL}${profilePicture}`;
+  };
+
   const fetchGroups = useCallback(async () => {
     try {
       setLoading(true);
@@ -35,7 +41,10 @@ const Groups = () => {
       const response = await axios.get(`${API_URL}/groups/list/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const groupData = response.data || [];
+      const groupData = (response.data || []).map(group => ({
+        ...group,
+        profile_picture: processGroupProfilePicture(group.profile_picture),
+      }));
       setGroups(groupData);
 
       const lastMessagesData = {};
@@ -92,7 +101,10 @@ const Groups = () => {
         headers: { Authorization: `Bearer ${token}` },
         params: { query },
       });
-      const groupData = response.data || [];
+      const groupData = (response.data || []).map(group => ({
+        ...group,
+        profile_picture: processGroupProfilePicture(group.profile_picture),
+      }));
       setGroups(groupData);
 
       const lastMessagesData = {};
@@ -206,6 +218,7 @@ const Groups = () => {
       text1: 'Error',
       text2: error.response?.data?.error || error.message || 'An error occurred',
       position: 'bottom',
+      position: 'bottom',
     });
   };
 
@@ -244,7 +257,7 @@ const Groups = () => {
       >
         {item.profile_picture ? (
           <Image
-            source={{ uri: `${API_URL}${item.profile_picture}` }}
+            source={{ uri: item.profile_picture }}
             style={tw`w-12 h-12 rounded-full mr-3`}
             onError={() => console.log(`Failed to load profile picture for group ${item.name}`)}
           />

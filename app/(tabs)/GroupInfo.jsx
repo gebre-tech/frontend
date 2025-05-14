@@ -15,7 +15,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import tw from 'twrnc';
 import { Ionicons } from '@expo/vector-icons';
 import Toast from 'react-native-toast-message';
-import { API_URL } from '../utils/constants';
+import { API_URL } from '../utils/constants'; // e.g., http://192.168.137.1:8000
 import * as ImagePicker from 'expo-image-picker';
 import { AuthContext } from '../../context/AuthContext';
 import Modal from 'react-native-modal';
@@ -29,6 +29,7 @@ const GroupInfo = () => {
   const navigation = useNavigation();
   const { user } = React.useContext(AuthContext);
   const [group, setGroup] = useState(null);
+  const [groupProfilePicture, setGroupProfilePicture] = useState(null); // New state for profile picture
   const [memberProfiles, setMemberProfiles] = useState({});
   const [groupDetails, setGroupDetails] = useState(null);
   const [isModalVisible, setModalVisible] = useState(false);
@@ -37,9 +38,36 @@ const GroupInfo = () => {
   const [contactProfiles, setContactProfiles] = useState({});
   const [selectedMembers, setSelectedMembers] = useState([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const [profilePictureVersion, setProfilePictureVersion] = useState(0);
   const ws = useRef(null);
   const reconnectAttempts = useRef(0);
   const maxReconnectAttempts = 5;
+
+  const fetchGroupProfilePicture = useCallback(async () => {
+    try {
+      const token = await AsyncStorage.getItem('token');
+      if (!token) throw new Error('No authentication token found');
+      const response = await axios.get(`${API_URL}/groups/list/`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const groupData = response.data || [];
+      const group = groupData.find((g) => g.id === parseInt(groupId));
+      if (group && group.profile_picture) {
+        let picUrl = group.profile_picture;
+        if (!picUrl.startsWith('http')) {
+          picUrl = `${API_URL}${picUrl}`;
+        }
+        setGroupProfilePicture(`${picUrl}?v=${profilePictureVersion}`);
+      } else {
+        setGroupProfilePicture(null);
+      }
+    } catch (error) {
+      console.error('Error fetching group profile picture:', error);
+      setGroupProfilePicture(null);
+      setImageError(true);
+    }
+  }, [groupId, profilePictureVersion]);
 
   const fetchGroup = useCallback(
     debounce(async () => {
@@ -53,6 +81,8 @@ const GroupInfo = () => {
         if (groupData) {
           setGroup(groupData);
           fetchMemberProfiles(groupData.members);
+          fetchGroupProfilePicture();
+          setImageError(false);
         } else {
           console.warn(`Group ${groupId} not found in groups list`);
           navigation.reset({
@@ -64,7 +94,7 @@ const GroupInfo = () => {
         handleError(error, 'Failed to fetch group');
       }
     }, 300),
-    [groupId, navigation]
+    [groupId, navigation, fetchGroupProfilePicture]
   );
 
   const fetchMemberProfiles = async (members) => {
@@ -84,10 +114,10 @@ const GroupInfo = () => {
           profileData.is_online = lastSeen && (now - lastSeen) < 5 * 60 * 1000;
           profiles[member.id] = profileData;
         } catch (error) {
-          console.error(`Failed to fetch profile for ${member.username}:`, error);
+          console.warn(`Failed to fetch profile for ${member.username}:`, error.message);
           profiles[member.id] = {
-            first_name: member.first_name,
-            username: member.username,
+            first_name: member.first_name || 'Unknown',
+            username: member.username || 'unknown',
             profile_picture: null,
             is_online: false,
           };
@@ -106,7 +136,14 @@ const GroupInfo = () => {
       const response = await axios.get(`${API_URL}/groups/details/${groupId}/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setGroupDetails(response.data);
+      const details = response.data;
+      setGroupDetails(details);
+      setGroup((prev) => ({
+        ...prev,
+        name: details.name,
+      }));
+      fetchGroupProfilePicture();
+      setImageError(false);
       setModalVisible(true);
     } catch (error) {
       handleError(error, 'Failed to fetch group details');
@@ -140,10 +177,10 @@ const GroupInfo = () => {
           profileData.is_online = lastSeen && (now - lastSeen) < 5 * 60 * 1000;
           profiles[contact.friend_id] = profileData;
         } catch (error) {
-          console.error(`Failed to fetch profile for ${contact.friend.user.username}:`, error);
+          console.warn(`Failed to fetch profile for ${contact.friend.user.username}:`, error.message);
           profiles[contact.friend_id] = {
-            first_name: contact.friend.user.first_name,
-            username: contact.friend.user.username,
+            first_name: contact.friend.user.first_name || 'Unknown',
+            username: contact.friend.user.username || 'unknown',
             profile_picture: null,
             is_online: false,
           };
@@ -173,7 +210,6 @@ const GroupInfo = () => {
       ws.current.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data);
-          console.log('WebSocket message received:', data);
           if (data.type === 'group_message') {
             const message = data.message;
             if (!message.sender || message.sender.username === 'system') {
@@ -215,6 +251,11 @@ const GroupInfo = () => {
                     });
                     return;
                   }
+                  if (phrase === 'Group profile picture updated') {
+                    setProfilePictureVersion((prev) => prev + 1);
+                    fetchGroupProfilePicture();
+                    setImageError(false);
+                  }
                   break;
                 }
               }
@@ -222,6 +263,7 @@ const GroupInfo = () => {
           } else if (data.type === 'group_updated') {
             setGroup(data.group);
             fetchMemberProfiles(data.group.members);
+            fetchGroupProfilePicture();
             if (!data.group.members.some((member) => member.id === user?.id)) {
               Toast.show({
                 type: 'info',
@@ -350,7 +392,9 @@ const GroupInfo = () => {
         type: 'error',
         text1: 'Error',
         text2: 'User is not a member of the group.',
-        position: 'bottom',
+
+text2: 'User is not a member of the group.',
+position: 'bottom',
       });
       return;
     }
@@ -656,7 +700,7 @@ const GroupInfo = () => {
       input.accept = 'image/*';
       input.onchange = async (event) => {
         const file = event.target.files[0];
-        if (file) updateProfilePicture(file);
+        if (file) await updateProfilePicture(file);
       };
       input.click();
     } else {
@@ -672,17 +716,17 @@ const GroupInfo = () => {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ImagePicker.MediaType.images,
         allowsEditing: true,
         aspect: [1, 1],
         quality: 1,
       });
 
-      if (!result.canceled) updateProfilePicture(result.assets[0].uri);
+      if (!result.canceled) await updateProfilePicture(result.assets[0]);
     }
   };
 
-  const updateProfilePicture = async (fileOrUri) => {
+  const updateProfilePicture = async (fileOrAsset) => {
     try {
       const token = await AsyncStorage.getItem('token');
       if (!token) throw new Error('No authentication token found');
@@ -690,18 +734,19 @@ const GroupInfo = () => {
       const formData = new FormData();
 
       if (Platform.OS === 'web') {
-        formData.append('profile_picture', fileOrUri, 'group_profile.jpg');
+        formData.append('profile_picture', fileOrAsset, fileOrAsset.name || 'group_profile');
       } else {
-        const fileInfo = await FileSystem.getInfoAsync(fileOrUri);
+        const { uri, fileName, type } = fileOrAsset;
+        const fileInfo = await FileSystem.getInfoAsync(uri);
         if (!fileInfo.exists) throw new Error('Image file does not exist');
 
-        const newUri = `${FileSystem.cacheDirectory}group_profile.jpg`;
-        await FileSystem.copyAsync({ from: fileOrUri, to: newUri });
+        const newUri = `${FileSystem.cacheDirectory}${fileName || 'group_profile'}`;
+        await FileSystem.copyAsync({ from: uri, to: newUri });
 
         formData.append('profile_picture', {
           uri: newUri,
-          name: 'group_profile.jpg',
-          type: 'image/jpeg',
+          name: fileName || 'group_profile',
+          type: type || 'image/*',
         });
       }
 
@@ -711,7 +756,14 @@ const GroupInfo = () => {
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' } }
       );
 
-      setGroup(response.data);
+      const updatedGroup = response.data;
+      setGroup(updatedGroup);
+      setGroupDetails((prev) => ({
+        ...prev,
+        name: updatedGroup.name,
+      }));
+      setProfilePictureVersion((prev) => prev + 1);
+      fetchGroupProfilePicture();
       Toast.show({
         type: 'success',
         text1: 'Success',
@@ -729,7 +781,7 @@ const GroupInfo = () => {
       error.response?.data?.detail ||
       error.message ||
       defaultMessage;
-    console.error('Error:', error, 'Response:', error.response?.data);
+    console.error('Error:', errorMessage);
     Toast.show({
       type: 'error',
       text1: 'Error',
@@ -759,10 +811,20 @@ const GroupInfo = () => {
   );
 
   const getAvatarUrl = (profile, firstName, username) => {
-    if (profile?.profile_picture) {
-      return `${API_URL}${profile.profile_picture}?t=${new Date().getTime()}`;
+    if (!firstName && !username) {
+      return 'https://ui-avatars.com/api/?name=Unknown&background=random';
     }
-    return `https://ui-avatars.com/api/?name=${firstName || username}&background=random`;
+    if (profile?.profile_picture) {
+      return profile.profile_picture;
+    }
+    return `https://ui-avatars.com/api/?name=${encodeURIComponent(firstName || username || 'Unknown')}&background=random`;
+  };
+
+  const getGroupProfilePictureUrl = () => {
+    if (groupProfilePicture && !imageError) {
+      return groupProfilePicture;
+    }
+    return null;
   };
 
   const renderMember = ({ item }) => {
@@ -779,7 +841,7 @@ const GroupInfo = () => {
         onPress={() => {
           if (item.username) navigation.navigate('FriendProfile', { username: item.username });
           else
-            NARToast.show({
+            Toast.show({
               type: 'error',
               text1: 'Error',
               text2: 'User profile unavailable',
@@ -790,10 +852,11 @@ const GroupInfo = () => {
         <Image
           source={{ uri: getAvatarUrl(profile, item.first_name, item.username) }}
           style={tw`w-10 h-10 rounded-full mr-3`}
-          onError={() => console.log(`Failed to load avatar for ${item.username}`)}
+          accessibilityLabel={`Profile picture for ${item.first_name || item.username || 'Unknown'}`}
+          onError={() => console.warn(`Failed to load avatar for ${item.username || 'unknown user'}`)}
         />
         <View style={tw`flex-1`}>
-          <Text style={tw`text-lg font-semibold text-gray-800`}>{item.first_name || item.username}</Text>
+          <Text style={tw`text-lg font-semibold text-gray-800`}>{item.first_name || item.username || 'Unknown'}</Text>
           {isMemberOwner ? (
             <Text style={tw`text-sm text-blue-500`}>Owner</Text>
           ) : isMemberAdmin ? (
@@ -855,7 +918,7 @@ const GroupInfo = () => {
     const profile = contactProfiles[item.friend_id] || {};
     return (
       <TouchableOpacity
-il      style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-sm border-b border-gray-100`}
+        style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow-sm border-b border-gray-100`}
         onPress={() => {
           if (item.friend.user.username) navigation.navigate('FriendProfile', { username: item.friend.user.username });
           else
@@ -869,14 +932,15 @@ il      style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow
       >
         <Image
           source={{
-            uri: getAvatarUrl(profile, item.friend.user.first_name, item.friend.user.username)
+            uri: getAvatarUrl(profile, item.friend.user.first_name, item.friend.user.username),
           }}
           style={tw`w-12 h-12 rounded-full mr-3`}
-          onError={() => console.log(`Failed to load avatar for ${item.friend.user.username}`)}
+          accessibilityLabel={`Profile picture for ${item.friend.user.first_name || item.friend.user.username || 'Unknown'}`}
+          onError={() => console.warn(`Failed to load avatar for ${item.friend.user.username || 'unknown user'}`)}
         />
         <View style={tw`flex-1`}>
           <Text style={tw`text-lg font-semibold text-gray-800`}>
-            {item.friend.user.first_name || item.friend.user.username}
+            {item.friend.user.first_name || item.friend.user.username || 'Unknown'}
           </Text>
           {profile.last_seen && (
             <Text style={tw`text-sm text-gray-500`}>
@@ -910,15 +974,23 @@ il      style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow
             disabled={!group.admins.some((admin) => admin.id === user?.id)}
             style={tw`relative w-12 h-12 rounded-full flex items-center justify-center mr-4`}
           >
-            {group.profile_picture ? (
+            {getGroupProfilePictureUrl() ? (
               <Image
-                source={{ uri: `${API_URL}${group.profile_picture}?t=${new Date().getTime()}` }}
+                source={{ uri: getGroupProfilePictureUrl() }}
                 style={tw`w-12 h-12 rounded-full`}
-                onError={() => console.log('Failed to load group profile picture')}
+                accessibilityLabel={`Profile picture for group ${group.name}`}
+                onError={() => {
+                  console.warn('Failed to load group profile picture');
+                  setImageError(true);
+                }}
+                onLoad={() => setImageError(false)}
               />
             ) : (
-              <View style={tw`w-12 h-12 rounded-full bg-white flex items-center justify-center`}>
-                <Text style={tw`text-lg font-bold text-[#1a73e8]`}>{group.name[0]}</Text>
+              <View
+                style={tw`w-12 h-12 rounded-full bg-white flex items-center justify-center`}
+                accessibilityLabel={`Placeholder for group ${group.name}`}
+              >
+                <Text style={tw`text-lg font-bold text-[#1a73e8]`}>{group.name[0]?.toUpperCase() || '?'}</Text>
               </View>
             )}
             {group.admins.some((admin) => admin.id === user?.id) && (
@@ -956,17 +1028,18 @@ il      style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow
                       memberProfiles[groupDetails.creator.id],
                       groupDetails.creator.first_name,
                       groupDetails.creator.username
-                    )
+                    ),
                   }}
                   style={tw`w-10 h-10 rounded-full mr-3`}
-                  onError={() => console.log('Failed to load creator avatar')}
+                  accessibilityLabel={`Profile picture for ${groupDetails.creator.first_name || groupDetails.creator.username || 'Unknown'}`}
+                  onError={() => console.warn('Failed to load creator avatar')}
                 />
                 <View>
                   <Text style={tw`text-base text-gray-800`}>
-                    {groupDetails.creator.first_name} (@{groupDetails.creator.username})
+                    {groupDetails.creator.first_name || 'Unknown'} (@{groupDetails.creator.username || 'unknown'})
                   </Text>
                   <Text style={tw`text-sm text-gray-500`}>
-                    {memberProfiles[groupDetails.creator.id]?.is_online ? 'Online' : 'Offline'}
+                    {memberProfiles[groupDetails.creator.id]?.is_online ? 'Online' : 'Offline imaginative'}
                   </Text>
                 </View>
               </View>
@@ -979,25 +1052,41 @@ il      style={tw`flex-row items-center p-4 bg-white rounded-lg mx-4 my-1 shadow
                         memberProfiles[admin.id],
                         admin.first_name,
                         admin.username
-                      )
+                      ),
                     }}
                     style={tw`w-8 h-8 rounded-full mr-2`}
-                    onError={() => console.log('Failed to load admin avatar')}
+                    accessibilityLabel={`Profile picture for ${admin.first_name || admin.username || 'Unknown'}`}
+                    onError={() => console.warn('Failed to load admin avatar')}
                   />
                   <Text style={tw`text-base text-gray-800`}>
-                    {admin.first_name} (@{admin.username})
+                    {admin.first_name || 'Unknown'} (@{admin.username || 'unknown'})
                     {admin.id === groupDetails.creator.id ? ' (Owner)' : ''}
                   </Text>
                 </View>
               ))}
-              {groupDetails.profile_picture && (
+              {groupProfilePicture && !imageError ? (
                 <View style={tw`mt-2`}>
                   <Text style={tw`text-base text-gray-800 mb-1`}>Profile Picture:</Text>
                   <Image
-                    source={{ uri: `${API_URL}${groupDetails.profile_picture}?t=${new Date().getTime()}` }}
+                    source={{ uri: groupProfilePicture }}
                     style={tw`w-20 h-20 rounded-lg`}
-                    onError={() => console.log('Failed to load group profile picture')}
+                    accessibilityLabel={`Profile picture for group ${groupDetails.name}`}
+                    onError={() => {
+                      console.warn('Failed to load group profile picture in modal');
+                      setImageError(true);
+                    }}
+                    onLoad={() => setImageError(false)}
                   />
+                </View>
+              ) : (
+                <View style={tw`mt-2`}>
+                  <Text style={tw`text-base text-gray-800 mb-1`}>Profile Picture:</Text>
+                  <View
+                    style={tw`w-20 h-20 rounded-lg bg-white flex items-center justify-center`}
+                    accessibilityLabel={`Placeholder for group ${groupDetails.name}`}
+                  >
+                    <Text style={tw`text-lg font-bold text-[#1a73e8]`}>{groupDetails.name[0]?.toUpperCase() || '?'}</Text>
+                  </View>
                 </View>
               )}
               {groupDetails.creator.id === user?.id && (

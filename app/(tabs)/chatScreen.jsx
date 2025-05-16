@@ -469,53 +469,21 @@ export default function ChatScreen() {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const storageKey = `downloaded_files_${senderId}_${contactId}`;
   const db = getDatabase();
-  const pendingMessagesRef = useRef([]);
   const reconnectAttemptsRef = useRef(0);
   const maxReconnectAttempts = 5;
   const baseReconnectDelay = 1000;
 
-  const initializeMessageIdCounter = useCallback(async () => {
-    try {
-      const storedCounter = await AsyncStorage.getItem('message_id_counter');
-      if (!storedCounter) {
-        await AsyncStorage.setItem('message_id_counter', '360');
-        return 360;
-      }
-      return parseInt(storedCounter, 10);
-    } catch (error) {
-      console.error('(NOBRIDGE) ERROR Error initializing message ID counter:', error);
-      return 360;
-    }
-  }, []);
-
-  const getNextMessageId = useCallback(async () => {
-    try {
-      let counter = await initializeMessageIdCounter();
-      let nextId = counter;
-
-      let existing = db.getAllSync('SELECT message_id FROM message_keys WHERE message_id = ?', [nextId.toString()]);
-      while (existing.length > 0) {
-        counter += 1;
-        nextId = counter;
-        existing = db.getAllSync('SELECT message_id FROM message_keys WHERE message_id = ?', [nextId.toString()]);
-      }
-
-      await AsyncStorage.setItem('message_id_counter', (counter + 1).toString());
-      return nextId.toString();
-    } catch (error) {
-      console.error('(NOBRIDGE) ERROR Error generating next message ID:', error);
-      throw error;
-    }
-  }, [initializeMessageIdCounter, db]);
-
+  // Initialize SQLite table for message keys
   useEffect(() => {
     try {
       db.execSync('CREATE TABLE IF NOT EXISTS message_keys (message_id TEXT PRIMARY KEY, message_key TEXT);');
+      db.execSync('CREATE INDEX IF NOT EXISTS idx_message_id ON message_keys (message_id);');
     } catch (error) {
-      console.error('(NOBRIDGE) ERROR Error creating table:', error);
+      console.error('(NOBRIDGE) ERROR Error creating table or index:', error);
     }
   }, [db]);
 
+  // Store message key in SQLite
   const storeMessageKey = useCallback((messageId, messageKey) => {
     try {
       if (!messageId || !messageKey || !/^[0-9a-f]{64}$/i.test(messageKey)) {
@@ -528,6 +496,33 @@ export default function ChatScreen() {
     }
   }, [db]);
 
+  // Retrieve message key from SQLite
+  const retrieveMessageKey = useCallback((messageId) => {
+    try {
+      const result = db.getFirstSync('SELECT message_key FROM message_keys WHERE message_id = ?', [messageId]);
+      if (result && result.message_key && /^[0-9a-f]{64}$/i.test(result.message_key)) {
+        console.log(`(NOBRIDGE) Retrieved message key for ID: ${messageId}`);
+        return Buffer.from(result.message_key, 'hex');
+      }
+      return null;
+    } catch (error) {
+      console.error('(NOBRIDGE) ERROR Error retrieving message key:', error);
+      return null;
+    }
+  }, [db]);
+
+  // Generate UUID for message_id
+  const getNextMessageId = useCallback(async () => {
+    try {
+      const uuid = await Crypto.randomUUID();
+      console.log(`(NOBRIDGE) Generated UUID for message_id: ${uuid}`);
+      return uuid;
+    } catch (error) {
+      console.error('(NOBRIDGE) ERROR Generating UUID:', error);
+      throw error;
+    }
+  }, []);
+
   useEffect(() => {
     checkAESSupport();
     navigation.setOptions({ headerShown: false });
@@ -539,7 +534,7 @@ export default function ChatScreen() {
           setDownloadedFiles(new Map(JSON.parse(storedFiles)));
         }
       } catch (error) {
-        console.error('Error loading downloaded files:', error);
+        console.error('(NOBRIDGE) ERROR Loading downloaded files:', error);
       }
     };
     loadDownloadedFiles();
@@ -550,7 +545,7 @@ export default function ChatScreen() {
       try {
         await AsyncStorage.setItem(storageKey, JSON.stringify([...downloadedFiles]));
       } catch (error) {
-        console.error('Error saving downloaded files:', error);
+        console.error('(NOBRIDGE) ERROR Saving downloaded files:', error);
       }
     };
     saveDownloadedFiles();
@@ -569,7 +564,7 @@ export default function ChatScreen() {
       profileData.is_online = lastSeen && (now - lastSeen) < 5 * 60 * 1000;
       setFriendProfile(profileData);
     } catch (error) {
-      console.error('Failed to fetch friend profile:', error.response?.status || error.message);
+      console.error('(NOBRIDGE) ERROR Failed to fetch friend profile:', error.response?.status || error.message);
       if (error.response?.status === 404) {
         setFriendProfile({ user: { first_name: contactUsername }, is_online: false });
       }
@@ -613,7 +608,7 @@ export default function ChatScreen() {
       setReceiverId(rId);
       return true;
     } catch (error) {
-      console.error('Initialize params error:', error);
+      console.error('(NOBRIDGE) ERROR Initialize params error:', error);
       Alert.alert('Error', 'Failed to initialize chat.');
       navigation.reset({
         index: 0,
@@ -671,7 +666,8 @@ export default function ChatScreen() {
 
     return {
       ...msg,
-      message: msg.content || msg.message || '',
+      content: msg.message || msg.content || '',
+      message: msg.message || msg.content || '',
       timestamp: msg.timestamp || msg.created_at || new Date().toISOString(),
       type,
       file_url: fileUrl,
@@ -718,10 +714,10 @@ export default function ChatScreen() {
   }, []);
 
   const processMessage = useCallback(async (msg, isHistory = false) => {
-    console.log(`(NOBRIDGE) Processing message ID: ${msg.message_id || 'undefined'}`);
+    console.log(`(NOBRIDGE) Processing message ID: ${msg.message_id || 'undefined'}, isHistory: ${isHistory}`);
     const messageId = `${msg.timestamp || ''}${msg.content || msg.message || ''}${msg.sender || ''}${msg.receiver || ''}${msg.file_url || ''}${msg.message_id || ''}`;
 
-    if (messageCache.current.has(messageId)) {
+    if (messageCache.current.has(messageId) && !isHistory) {
       console.log(`(NOBRIDGE) Message ID: ${msg.message_id || 'undefined'} already in cache`);
       return { normalizedMsg: messageCache.current.get(messageId), keyUsedFromSQLite: false };
     }
@@ -729,33 +725,54 @@ export default function ChatScreen() {
     let processedMsg = { ...msg };
     let keyUsedFromSQLite = false;
 
-    if (msg.type === 'text' && msg.content && msg.nonce && msg.message_id && msg.ephemeral_key) {
-      console.log(`(NOBRIDGE) Processing text message ID: ${msg.message_id}`);
-      const result = db.getFirstSync('SELECT message_id, message_key FROM message_keys WHERE message_id = ?', [msg.message_id]);
-      let key;
+    if (msg.type === 'text' && (msg.content || msg.message) && msg.nonce && msg.ephemeral_key) {
+      console.log(`(NOBRIDGE) Processing text message ID: ${msg.message_id || 'undefined'}`);
 
-      if (result && result.message_key && /^[0-9a-f]{64}$/i.test(result.message_key)) {
-        console.log(`(NOBRIDGE) Using SQLite key for ID: ${msg.message_id}`);
-        key = Buffer.from(result.message_key, 'hex');
-        keyUsedFromSQLite = true;
-      } else {
-        console.log(`(NOBRIDGE) Generating key for ID: ${msg.message_id}`);
-        try {
-          const keyData = await noiseRef.current.generateMessageKey(msg.ephemeral_key);
-          key = keyData.key;
-          storeMessageKey(msg.message_id, key.toString('hex')); // Store key for received messages
-          console.log(`(NOBRIDGE) Stored generated key for ID: ${msg.message_id}`);
-        } catch (error) {
-          console.error(`(NOBRIDGE) Failed to generate key for Message ID: ${msg.message_id}`, error);
-          processedMsg.content = `[Key Generation Failed: ${error.message}]`;
+      let key;
+      // Always check SQLite first for the message key
+      if (msg.message_id) {
+        key = retrieveMessageKey(msg.message_id);
+        if (key) {
+          console.log(`(NOBRIDGE) Using SQLite key for ID: ${msg.message_id}`);
+          keyUsedFromSQLite = true;
+        }
+      }
+
+      // If no key from SQLite, check provided message_key or generate a new one
+      if (!key) {
+        if (msg.message_key && /^[0-9a-f]{64}$/i.test(msg.message_key)) {
+          console.log(`(NOBRIDGE) Using provided message key for ID: ${msg.message_id || 'undefined'}`);
+          key = Buffer.from(msg.message_key, 'hex');
+          if (msg.message_id) {
+            storeMessageKey(msg.message_id, msg.message_key);
+          }
+          keyUsedFromSQLite = false;
+        } else {
+          console.log(`(NOBRIDGE) Generating key for ID: ${msg.message_id || 'undefined'}`);
+          try {
+            const keyData = await noiseRef.current.generateMessageKey(msg.ephemeral_key);
+            key = keyData.key;
+            if (msg.message_id) {
+              storeMessageKey(msg.message_id, key.toString('hex'));
+            }
+            console.log(`(NOBRIDGE) Stored generated key for ID: ${msg.message_id || 'undefined'}`);
+          } catch (error) {
+            console.error(`(NOBRIDGE) ERROR Failed to generate key for Message ID: ${msg.message_id || 'undefined'}`, error);
+            processedMsg.content = `[Key Generation Failed: ${error.message}]`;
+          }
         }
       }
 
       if (key) {
-        processedMsg.content = await decryptMessage(msg.content, key, msg.nonce);
+        const ciphertext = msg.content || msg.message;
+        processedMsg.content = await decryptMessage(ciphertext, key, msg.nonce);
+        processedMsg.message = processedMsg.content; // Ensure both fields are updated
+      } else {
+        processedMsg.content = `[Missing Key: Unable to decrypt]`;
+        processedMsg.message = processedMsg.content;
       }
     } else {
-      console.log(`(NOBRIDGE) Skipping message ID: ${msg.message_id || 'undefined'}, Type: ${msg.type}, Content: ${!!msg.content}, Nonce: ${!!msg.nonce}, Ephemeral Key: ${!!msg.ephemeral_key}`);
+      console.log(`(NOBRIDGE) Skipping message ID: ${msg.message_id || 'undefined'}, Type: ${msg.type}, Content: ${!!(msg.content || msg.message)}, Nonce: ${!!msg.nonce}, Ephemeral Key: ${!!msg.ephemeral_key}`);
       if (['photo', 'video', 'audio', 'file'].includes(msg.type)) {
         processedMsg = validateFileMessage(processedMsg);
       }
@@ -767,7 +784,7 @@ export default function ChatScreen() {
     }
 
     return { normalizedMsg, keyUsedFromSQLite };
-  }, [decryptMessage, normalizeMessage, validateFileMessage, db, storeMessageKey]);
+  }, [decryptMessage, normalizeMessage, validateFileMessage, retrieveMessageKey, storeMessageKey]);
 
   const connectWebSocket = useCallback(async () => {
     if (!accessToken || !senderIdState || !receiverId) {
@@ -844,6 +861,14 @@ export default function ChatScreen() {
           return;
         }
 
+        if (data.error) {
+          console.error('(NOBRIDGE) ERROR WebSocket error:', data.error);
+          if (data.error.includes('message_id must be unique')) {
+            console.log('(NOBRIDGE) Duplicate message_id detected, UUID should prevent this');
+          }
+          return;
+        }
+
         const messageId = `${data.timestamp || ''}${data.message || ''}${data.sender || ''}${data.receiver || ''}${data.file_url || ''}${data.message_id || ''}`;
 
         if (data.messages) {
@@ -869,19 +894,15 @@ export default function ChatScreen() {
 
           const { normalizedMsg, keyUsedFromSQLite } = await processMessage(data);
           if (normalizedMsg.type !== 'handshake') {
-            pendingMessagesRef.current.push({ ...normalizedMsg, __keyUsedFromSQLite: keyUsedFromSQLite });
-            setTimeout(() => {
-              if (pendingMessagesRef.current.length > 0) {
-                const sqliteKeyCount = pendingMessagesRef.current.reduce((count, msg) => count + (msg.__keyUsedFromSQLite ? 1 : 0), 0);
-                console.log(`(NOBRIDGE) Processed ${pendingMessagesRef.current.length} live messages, ${sqliteKeyCount} used SQLite-stored encryption keys`);
-                setMessages(prev => [...prev, ...pendingMessagesRef.current.map(msg => {
-                  const { __keyUsedFromSQLite, ...cleanMsg } = msg;
-                  return cleanMsg;
-                })]);
-                pendingMessagesRef.current = [];
-                scrollToBottom();
+            setMessages(prev => {
+              if (prev.some(msg => msg.id === normalizedMsg.id)) {
+                console.log(`(NOBRIDGE) Message ID: ${normalizedMsg.id} already in state, skipping`);
+                return prev;
               }
-            }, 100);
+              console.log(`(NOBRIDGE) Processed 1 live message, ${keyUsedFromSQLite ? 1 : 0} used SQLite-stored encryption keys`);
+              return [...prev, normalizedMsg];
+            });
+            scrollToBottom();
           }
         }
       } catch (error) {
@@ -1019,6 +1040,7 @@ export default function ChatScreen() {
       const { ciphertext, nonce, ephemeralKey, messageKey } = await encryptMessage(inputText);
       const messageId = await getNextMessageId();
       storeMessageKey(messageId, messageKey);
+
       const messageData = {
         sender: senderIdState,
         receiver: receiverId,
@@ -1030,14 +1052,20 @@ export default function ChatScreen() {
         timestamp: new Date().toISOString(),
         message_id: messageId,
       };
+
+      // Send the message via WebSocket
       socketRef.current.send(JSON.stringify(messageData));
+
+      // Process the message for the sender's view
+      const { normalizedMsg } = await processMessage(messageData);
+      setMessages(prev => [...prev, normalizedMsg]);
       setInputText('');
       scrollToBottom();
     } catch (error) {
       console.error('(NOBRIDGE) ERROR Failed to send message:', error);
       Alert.alert('Send Failed', 'Failed to send message: ' + error.message);
     }
-  }, [senderIdState, receiverId, inputText, encryptMessage, getNextMessageId, storeMessageKey]);
+  }, [senderIdState, receiverId, inputText, encryptMessage, getNextMessageId, storeMessageKey, processMessage]);
 
   const sendFile = useCallback(async (fileData) => {
     if (!senderIdState || !receiverId || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN || !noiseRef.current?.handshakeFinished) {

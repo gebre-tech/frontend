@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, memo, useContext } from 'react';
 import 'react-native-get-random-values';
 import {
   View, FlatList, TextInput, Text, TouchableOpacity, Platform,
@@ -21,6 +21,7 @@ import tw from 'twrnc';
 import { Modalize } from 'react-native-modalize';
 import * as SQLite from 'expo-sqlite';
 import { API_HOST, API_URL, PLACEHOLDER_IMAGE_ICON, DEFAULT_AVATAR_ICON } from '../utils/constants';
+import { AuthContext } from '../../context/AuthContext';
 
 // Singleton for database initialization
 const getDatabase = (() => {
@@ -43,24 +44,30 @@ const checkAESSupport = () => {
   return aesExists;
 };
 
-async function fetchReceiverPublicKey(receiverId, token) {
-  try {
-    const response = await fetch(`${API_URL}/auth/user/${receiverId}/public_key/`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-    });
-    const data = await response.json();
-    if (response.ok) {
-      return data.public_key;
+async function fetchReceiverPublicKey(receiverId, token, retries = 3, delay = 1000) {
+  while (retries > 0) {
+    try {
+      const response = await fetch(`${API_URL}/auth/user/${receiverId}/public_key/`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+      const data = await response.json();
+      if (response.ok && data.public_key && /^[0-9a-f]{64}$/i.test(data.public_key)) {
+        console.log(`(NOBRIDGE) Successfully fetched receiver public key for ID: ${receiverId}`);
+        return data.public_key;
+      }
+      throw new Error(`Invalid public key response: ${JSON.stringify(data)}`);
+    } catch (error) {
+      retries -= 1;
+      console.error(`(NOBRIDGE) ERROR Fetch receiver public key (attempts left: ${retries}):`, error);
+      if (retries === 0) return null;
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
-    return null;
-  } catch (error) {
-    console.error("(NOBRIDGE) ERROR Fetch receiver public key error:", error);
-    return null;
   }
+  return null;
 }
 
 class NoiseNN {
@@ -75,33 +82,50 @@ class NoiseNN {
     this.handshakeFinished = false;
   }
 
-  async initialize() {
-    try {
-      const [privateKeyHex, publicKeyHex] = await Promise.all([
-        AsyncStorage.getItem(`private_key_${this.email}`),
-        AsyncStorage.getItem(`public_key_${this.email}`),
-      ]);
+  async initialize(retries = 3) {
+    while (retries > 0) {
+      try {
+        const [privateKeyHex, publicKeyHex] = await Promise.all([
+          AsyncStorage.getItem(`private_key_${this.email}`),
+          AsyncStorage.getItem(`public_key_${this.email}`),
+        ]);
 
-      if (!privateKeyHex || !publicKeyHex || !this.isValidKeyPair(privateKeyHex, publicKeyHex)) {
-        throw new Error("Keys not found or invalid.");
-      }
+        if (!privateKeyHex || !publicKeyHex || !this.isValidKeyPair(privateKeyHex, publicKeyHex)) {
+          console.log('(NOBRIDGE) Generating new key pair due to invalid or missing keys');
+          const newKeyPair = await this.generateKeyPair();
+          await Promise.all([
+            AsyncStorage.setItem(`private_key_${this.email}`, newKeyPair.privateKey.toString('hex')),
+            AsyncStorage.setItem(`public_key_${this.email}`, newKeyPair.publicKey.toString('hex')),
+          ]);
+          await this.syncPublicKeyWithServer(newKeyPair.publicKey.toString('hex'));
+          this.baseKeyPair = newKeyPair;
+        } else {
+          this.baseKeyPair = {
+            privateKey: Buffer.from(privateKeyHex, 'hex'),
+            publicKey: Buffer.from(publicKeyHex, 'hex'),
+          };
+        }
 
-      this.baseKeyPair = {
-        privateKey: Buffer.from(privateKeyHex, 'hex'),
-        publicKey: Buffer.from(publicKeyHex, 'hex'),
-      };
+        const receiverPublicKeyHex = await fetchReceiverPublicKey(this.receiverId, this.token);
+        if (!receiverPublicKeyHex || !this.isValidPublicKey(receiverPublicKeyHex)) {
+          throw new Error('Failed to fetch valid receiver public key');
+        }
 
-      const receiverPublicKeyHex = await fetchReceiverPublicKey(this.receiverId, this.token);
-      if (receiverPublicKeyHex && this.isValidPublicKey(receiverPublicKeyHex)) {
         await AsyncStorage.setItem(`receiver_public_key_${this.receiverId}`, receiverPublicKeyHex);
         this.remoteBasePublicKey = Buffer.from(receiverPublicKeyHex, 'hex');
         const rawSharedSecret = x25519.scalarMult(this.baseKeyPair.privateKey, this.remoteBasePublicKey);
         this.baseSharedSecret = Buffer.from(rawSharedSecret.slice(0, 32));
         this.handshakeFinished = true;
+        console.log(`(NOBRIDGE) NoiseNN handshake completed for sender: ${this.senderId}, receiver: ${this.receiverId}`);
+        return;
+      } catch (error) {
+        retries -= 1;
+        console.error(`(NOBRIDGE) ERROR NoiseNN initialization failed (attempts left: ${retries}):`, error);
+        if (retries === 0) {
+          throw new Error(`NoiseNN initialization failed after retries: ${error.message}`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
-    } catch (error) {
-      console.error("(NOBRIDGE) ERROR NoiseNN initialization failed:", error);
-      throw error;
     }
   }
 
@@ -114,8 +138,9 @@ class NoiseNN {
   isValidPublicKey(publicKeyHex) {
     try {
       const publicKey = Buffer.from(publicKeyHex, 'hex');
-      return publicKey.length === 32;
+      return publicKey.length === 32 && /^[0-9a-f]{64}$/i.test(publicKeyHex);
     } catch (error) {
+      console.error('(NOBRIDGE) ERROR Invalid public key format:', error);
       return false;
     }
   }
@@ -127,6 +152,7 @@ class NoiseNN {
       const computedPublicKey = Buffer.from(x25519.getPublicKey(privateKey));
       return privateKey.length === 32 && publicKey.length === 32 && computedPublicKey.equals(publicKey);
     } catch (error) {
+      console.error('(NOBRIDGE) ERROR Invalid key pair:', error);
       return false;
     }
   }
@@ -142,38 +168,57 @@ class NoiseNN {
         body: JSON.stringify({ public_key: publicKeyHex }),
       });
       if (!response.ok) {
-        console.error("(NOBRIDGE) ERROR Failed to sync public key:", await response.json());
+        console.error('(NOBRIDGE) ERROR Failed to sync public key:', await response.json());
+      } else {
+        console.log('(NOBRIDGE) Successfully synced public key with server');
       }
     } catch (error) {
-      console.error("(NOBRIDGE) ERROR Sync public key error:", error);
+      console.error('(NOBRIDGE) ERROR Sync public key error:', error);
     }
   }
 
-  async generateMessageKey(remoteEphemeralPublicKey = null) {
-    if (!this.handshakeFinished) {
-      throw new Error("Handshake not completed.");
+  async generateMessageKey(remoteEphemeralPublicKey = null, retries = 2) {
+    while (retries > 0) {
+      try {
+        if (!this.handshakeFinished) {
+          throw new Error('Handshake not completed');
+        }
+
+        const ephemeralKeyPair = remoteEphemeralPublicKey ? null : await this.generateKeyPair();
+        const ephPubKey = remoteEphemeralPublicKey
+          ? Buffer.from(remoteEphemeralPublicKey, 'hex')
+          : ephemeralKeyPair.publicKey;
+
+        if (!ephPubKey || ephPubKey.length !== 32) {
+          throw new Error('Invalid ephemeral public key');
+        }
+
+        const normalizedSharedSecret = Buffer.from(this.baseSharedSecret).slice(0, 32);
+        const normalizedEphPubKey = Buffer.from(ephPubKey).slice(0, 32);
+
+        const concatBytes = new Uint8Array(64);
+        concatBytes.set(normalizedSharedSecret, 0);
+        concatBytes.set(normalizedEphPubKey, 32);
+
+        const messageKey = await Crypto.digest(
+          Crypto.CryptoDigestAlgorithm.SHA256,
+          concatBytes
+        );
+        const key = Buffer.from(messageKey).slice(0, 32);
+
+        console.log(`(NOBRIDGE) Generated message key: ${key.toString('hex')}`);
+        return {
+          publicKey: ephemeralKeyPair ? ephemeralKeyPair.publicKey : null,
+          key,
+        };
+      } catch (error) {
+        retries -= 1;
+        console.error(`(NOBRIDGE) ERROR Generating message key (attempts left: ${retries}):`, error);
+        if (retries === 0) throw error;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     }
-
-    const ephemeralKeyPair = remoteEphemeralPublicKey ? null : await this.generateKeyPair();
-    const ephPubKey = remoteEphemeralPublicKey ? Buffer.from(remoteEphemeralPublicKey, 'hex') : ephemeralKeyPair.publicKey;
-
-    const normalizedSharedSecret = Buffer.from(this.baseSharedSecret).slice(0, 32);
-    const normalizedEphPubKey = Buffer.from(ephPubKey).slice(0, 32);
-
-    const concatBytes = new Uint8Array(64);
-    concatBytes.set(normalizedSharedSecret, 0);
-    concatBytes.set(normalizedEphPubKey, 32);
-
-    const messageKey = await Crypto.digest(
-      Crypto.CryptoDigestAlgorithm.SHA256,
-      concatBytes
-    );
-    const key = Buffer.from(messageKey).slice(0, 32);
-
-    return {
-      publicKey: ephemeralKeyPair ? ephemeralKeyPair.publicKey : null,
-      key,
-    };
+    throw new Error('Failed to generate message key after retries');
   }
 }
 
@@ -228,7 +273,7 @@ const FileMessage = memo(({ uri, fileType, fileName, fileSize, nonce, messageKey
 
     const decryptFile = async () => {
       try {
-        if (!uri) throw new Error("Missing file URI");
+        if (!uri) throw new Error('Missing file URI');
         if (!isDownloaded) {
           if (isActive) {
             setDecryptedUri(null);
@@ -249,6 +294,7 @@ const FileMessage = memo(({ uri, fileType, fileName, fileSize, nonce, messageKey
 
         if (!noise?.handshakeFinished || !nonce || !ephemeralKey) {
           if (isActive) {
+            setError('Cannot decrypt file: missing encryption data or handshake incomplete');
             setDecryptedUri(uri);
             setIsMounted(true);
             setIsLoading(false);
@@ -399,6 +445,7 @@ export default function ChatScreen() {
   const route = useRoute();
   const { senderId, contactId, contactUsername } = route.params || {};
   const navigation = useNavigation();
+  const { accessToken, refreshToken: refreshAuthToken, user, error: authError } = useContext(AuthContext);
 
   const [senderIdState, setSenderId] = useState(null);
   const [receiverId, setReceiverId] = useState(null);
@@ -410,7 +457,6 @@ export default function ChatScreen() {
   const reconnectTimeoutRef = useRef(null);
   const flatListRef = useRef(null);
   const modalizeRef = useRef(null);
-  const [token, setToken] = useState(null);
   const [fullScreenMedia, setFullScreenMedia] = useState(null);
   const [downloading, setDownloading] = useState({});
   const [downloadProgress, setDownloadProgress] = useState({});
@@ -426,7 +472,7 @@ export default function ChatScreen() {
   const pendingMessagesRef = useRef([]);
   const reconnectAttemptsRef = useRef(0);
   const maxReconnectAttempts = 5;
-  const baseReconnectDelay = 1000; // 1 second
+  const baseReconnectDelay = 1000;
 
   const initializeMessageIdCounter = useCallback(async () => {
     try {
@@ -472,7 +518,11 @@ export default function ChatScreen() {
 
   const storeMessageKey = useCallback((messageId, messageKey) => {
     try {
+      if (!messageId || !messageKey || !/^[0-9a-f]{64}$/i.test(messageKey)) {
+        throw new Error('Invalid messageId or messageKey');
+      }
       db.runSync('INSERT OR REPLACE INTO message_keys (message_id, message_key) VALUES (?, ?)', [messageId, messageKey]);
+      console.log(`(NOBRIDGE) Stored message key for ID: ${messageId}, Key: ${messageKey}`);
     } catch (error) {
       console.error('(NOBRIDGE) ERROR Error storing message key:', error);
     }
@@ -507,12 +557,11 @@ export default function ChatScreen() {
   }, [downloadedFiles, storageKey]);
 
   const fetchFriendProfile = useCallback(async () => {
-    if (!contactUsername) return;
+    if (!contactUsername || !accessToken) return;
 
     try {
-      const token = await AsyncStorage.getItem('token');
       const response = await axios.get(`${API_URL}/profiles/friend/${contactUsername}/`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${accessToken}` },
       });
       const profileData = response.data;
       const now = new Date();
@@ -525,7 +574,7 @@ export default function ChatScreen() {
         setFriendProfile({ user: { first_name: contactUsername }, is_online: false });
       }
     }
-  }, [contactUsername]);
+  }, [contactUsername, accessToken]);
 
   useEffect(() => {
     fetchFriendProfile();
@@ -535,35 +584,19 @@ export default function ChatScreen() {
 
   const initializeParams = useCallback(async () => {
     try {
-      let [token, userEmail, cachedSenderId] = await Promise.all([
-        AsyncStorage.getItem('token'),
-        AsyncStorage.getItem('user_email'),
-        AsyncStorage.getItem('user_id'),
-      ]);
-
-      if (!token) {
-        Alert.alert('Error', 'Authentication token missing. Please log in again.');
-        // Use reset to navigate to root or a fallback screen
+      if (!accessToken || !user) {
+        Alert.alert('Error', 'Not authenticated. Please log in again.');
         navigation.reset({
           index: 0,
-          routes: [{ name: 'Login' }], // Fallback to 'Login' screen
+          routes: [{ name: 'Login' }],
         });
         return false;
       }
 
-      if (!userEmail || !cachedSenderId) {
-        const res = await axios.get(`${API_URL}/auth/profile/`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        userEmail = res.data.email;
-        cachedSenderId = res.data.id.toString();
-        await AsyncStorage.setItem('user_email', userEmail);
-        await AsyncStorage.setItem('user_id', cachedSenderId);
-      }
+      const userEmail = user.email;
+      const cachedSenderId = user.id.toString();
 
-      setToken(token);
       setEmail(userEmail);
-
       const sId = senderId ? parseInt(senderId, 10) : parseInt(cachedSenderId, 10);
       const rId = contactId ? parseInt(contactId, 10) : null;
 
@@ -571,7 +604,7 @@ export default function ChatScreen() {
         Alert.alert('Error', 'Invalid chat parameters.');
         navigation.reset({
           index: 0,
-          routes: [{ name: 'Login' }], // Fallback to 'Login' screen
+          routes: [{ name: 'Login' }],
         });
         return false;
       }
@@ -584,11 +617,11 @@ export default function ChatScreen() {
       Alert.alert('Error', 'Failed to initialize chat.');
       navigation.reset({
         index: 0,
-        routes: [{ name: 'Login' }], // Fallback to 'Login' screen
+        routes: [{ name: 'Login' }],
       });
       return false;
     }
-  }, [senderId, contactId, navigation]);
+  }, [senderId, contactId, navigation, accessToken, user]);
 
   const resetState = useCallback(() => {
     setMessages([]);
@@ -653,53 +686,76 @@ export default function ChatScreen() {
 
   const validateFileMessage = useCallback((msg) => {
     if (['photo', 'video', 'audio', 'file'].includes(msg.type) && (!msg.file_url || !msg.file_type)) {
-      return { ...msg, message: "Failed to load file (missing data)" };
+      return { ...msg, message: 'Failed to load file (missing data)' };
     }
     return msg;
   }, []);
 
   const decryptMessage = useCallback(async (ciphertext, key, nonce) => {
     try {
+      if (!ciphertext || !/^[0-9a-f]+$/i.test(ciphertext)) {
+        throw new Error('Invalid ciphertext format');
+      }
+      if (!nonce || !/^[0-9a-f]{32}$/i.test(nonce)) {
+        throw new Error('Invalid nonce format');
+      }
+      if (!key || key.length !== 32) {
+        throw new Error('Invalid key length');
+      }
+
+      console.log(`(NOBRIDGE) Decrypting message with ciphertext: ${ciphertext}, nonce: ${nonce}, key: ${key.toString('hex')}`);
       const iv = Buffer.from(nonce, 'hex');
       const encryptedBytes = aesjs.utils.hex.toBytes(ciphertext);
       const aesCbc = new aesjs.ModeOfOperation.cbc(key, iv);
       const decryptedBytes = aesCbc.decrypt(encryptedBytes);
-      return aesjs.utils.utf8.fromBytes(aesjs.padding.pkcs7.strip(decryptedBytes));
+      const plaintext = aesjs.utils.utf8.fromBytes(aesjs.padding.pkcs7.strip(decryptedBytes));
+      console.log(`(NOBRIDGE) Decryption successful for ciphertext: ${ciphertext}`);
+      return plaintext;
     } catch (e) {
-      return "[Decryption Failed: " + e.message + "]";
+      console.error(`(NOBRIDGE) Decryption failed for ciphertext: ${ciphertext}`, e);
+      return `[Decryption Failed: ${e.message}]`;
     }
   }, []);
 
   const processMessage = useCallback(async (msg, isHistory = false) => {
-    console.log(`Processing message: ${JSON.stringify(msg)}`);
-    const messageId = `${msg.timestamp || ''}${msg.message || ''}${msg.sender || ''}${msg.receiver || ''}${msg.file_url || ''}${msg.message_id || ''}`;
-    
+    console.log(`(NOBRIDGE) Processing message ID: ${msg.message_id || 'undefined'}`);
+    const messageId = `${msg.timestamp || ''}${msg.content || msg.message || ''}${msg.sender || ''}${msg.receiver || ''}${msg.file_url || ''}${msg.message_id || ''}`;
+
     if (messageCache.current.has(messageId)) {
-      console.log(`Message ID: ${msg.message_id || 'undefined'} already in cache, skipping processing`);
+      console.log(`(NOBRIDGE) Message ID: ${msg.message_id || 'undefined'} already in cache`);
       return { normalizedMsg: messageCache.current.get(messageId), keyUsedFromSQLite: false };
     }
 
     let processedMsg = { ...msg };
     let keyUsedFromSQLite = false;
 
-    if (msg.type === 'text' && msg.message && msg.nonce && msg.message_id) {
-      console.log(`Message ID from msg: ${msg.message_id}`);
+    if (msg.type === 'text' && msg.content && msg.nonce && msg.message_id && msg.ephemeral_key) {
+      console.log(`(NOBRIDGE) Processing text message ID: ${msg.message_id}`);
       const result = db.getFirstSync('SELECT message_id, message_key FROM message_keys WHERE message_id = ?', [msg.message_id]);
       let key;
-      if (result && result.message_key) {
-        console.log(`Message ID from SQLite: ${result.message_id}, Matches msg.message_id: ${msg.message_id === result.message_id}`);
+
+      if (result && result.message_key && /^[0-9a-f]{64}$/i.test(result.message_key)) {
+        console.log(`(NOBRIDGE) Using SQLite key for ID: ${msg.message_id}`);
         key = Buffer.from(result.message_key, 'hex');
         keyUsedFromSQLite = true;
-        console.log(`Message ID: ${msg.message_id} used SQLite-stored encryption key`);
       } else {
-        console.log(`No SQLite entry for Message ID: ${msg.message_id}, using generated key`);
-        const keyData = await noiseRef.current.generateMessageKey(msg.ephemeral_key);
-        key = keyData.key;
-        console.log(`Message ID: ${msg.message_id} used generated encryption key`);
+        console.log(`(NOBRIDGE) Generating key for ID: ${msg.message_id}`);
+        try {
+          const keyData = await noiseRef.current.generateMessageKey(msg.ephemeral_key);
+          key = keyData.key;
+          storeMessageKey(msg.message_id, key.toString('hex')); // Store key for received messages
+          console.log(`(NOBRIDGE) Stored generated key for ID: ${msg.message_id}`);
+        } catch (error) {
+          console.error(`(NOBRIDGE) Failed to generate key for Message ID: ${msg.message_id}`, error);
+          processedMsg.content = `[Key Generation Failed: ${error.message}]`;
+        }
       }
-      processedMsg.message = await decryptMessage(msg.message, key, msg.nonce);
+
+      if (key) {
+        processedMsg.content = await decryptMessage(msg.content, key, msg.nonce);
+      }
     } else {
-      console.log(`Skipping non-text message or missing fields for Message ID: ${msg.message_id || 'undefined'}`);
+      console.log(`(NOBRIDGE) Skipping message ID: ${msg.message_id || 'undefined'}, Type: ${msg.type}, Content: ${!!msg.content}, Nonce: ${!!msg.nonce}, Ephemeral Key: ${!!msg.ephemeral_key}`);
       if (['photo', 'video', 'audio', 'file'].includes(msg.type)) {
         processedMsg = validateFileMessage(processedMsg);
       }
@@ -711,47 +767,85 @@ export default function ChatScreen() {
     }
 
     return { normalizedMsg, keyUsedFromSQLite };
-  }, [decryptMessage, normalizeMessage, validateFileMessage, db]);
+  }, [decryptMessage, normalizeMessage, validateFileMessage, db, storeMessageKey]);
 
   const connectWebSocket = useCallback(async () => {
-    if (!token || !senderIdState || !receiverId || (socketRef.current && socketRef.current.readyState === WebSocket.OPEN)) {
+    if (!accessToken || !senderIdState || !receiverId) {
+      console.log('(NOBRIDGE) Missing required parameters for WebSocket connection');
       return;
     }
 
-    // Clear any existing reconnection attempts
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      console.log('(NOBRIDGE) WebSocket already open');
+      return;
+    }
+
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
 
-    const wsUrl = `ws://${API_HOST}/ws/chat/${senderIdState}/${receiverId}/?token=${token}`;
-    socketRef.current = new WebSocket(wsUrl);
-    noiseRef.current = new NoiseNN(senderIdState, receiverId, token, email);
+    const protocol = Platform.OS === 'web' || API_HOST.includes('https') ? 'wss' : 'ws';
+    const wsUrl = `${protocol}://${API_HOST}/ws/chat/${senderIdState}/${receiverId}/?token=${accessToken}`;
+    console.log('(NOBRIDGE) Connecting to WebSocket:', wsUrl);
+
+    try {
+      socketRef.current = new WebSocket(wsUrl);
+    } catch (error) {
+      console.error('(NOBRIDGE) ERROR Failed to create WebSocket:', error);
+      scheduleReconnect();
+      return;
+    }
+
+    noiseRef.current = new NoiseNN(senderIdState, receiverId, accessToken, email);
 
     try {
       await noiseRef.current.initialize();
     } catch (error) {
-      console.error('NoiseNN initialization error:', error);
-      Alert.alert('Error', 'Failed to initialize encryption.');
-      navigation.reset({
-        index: 0,
-        routes: [{ name: 'Login' }], // Fallback to 'Login' screen
-      });
+      console.error('(NOBRIDGE) ERROR NoiseNN initialization error:', error);
+      Alert.alert('Error', 'Failed to initialize encryption. Please try again.');
+      socketRef.current.close();
+      fetchChatHistoryViaHttp();
       return;
     }
 
+    let pingInterval = null;
+    const sendPing = () => {
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({ type: 'ping' }));
+        console.log('(NOBRIDGE) Sent ping');
+      }
+    };
+
     socketRef.current.onopen = () => {
-      console.log('WebSocket opened, requesting history');
-      reconnectAttemptsRef.current = 0; // Reset reconnect attempts on successful connection
+      console.log('(NOBRIDGE) WebSocket opened for contact', receiverId);
+      reconnectAttemptsRef.current = 0;
       socketRef.current.send(JSON.stringify({ request_history: true }));
+      pingInterval = setInterval(sendPing, 30000);
     };
 
     socketRef.current.onmessage = async (event) => {
       try {
-        const data = JSON.parse(event.data);
-        console.log(`Received WebSocket data: ${JSON.stringify(data)}`);
+        let messageData;
+        if (typeof event === 'string') {
+          messageData = event;
+        } else if (event && typeof event === 'object' && 'data' in event) {
+          messageData = event.data;
+        } else {
+          console.error('(NOBRIDGE) ERROR Unexpected WebSocket event structure:', JSON.stringify(event));
+          return;
+        }
+
+        const data = JSON.parse(messageData);
+        console.log('(NOBRIDGE) Received WebSocket data:', JSON.stringify(data));
+
+        if (data.type === 'pong') {
+          console.log('(NOBRIDGE) Received pong');
+          return;
+        }
+
         const messageId = `${data.timestamp || ''}${data.message || ''}${data.sender || ''}${data.receiver || ''}${data.file_url || ''}${data.message_id || ''}`;
-        
+
         if (data.messages) {
           let sqliteKeyCount = 0;
           const decryptedMessages = await Promise.all(
@@ -761,7 +855,7 @@ export default function ChatScreen() {
               return normalizedMsg;
             })
           );
-          console.log(`Processed ${data.messages.length} history messages, ${sqliteKeyCount} used SQLite-stored encryption keys`);
+          console.log(`(NOBRIDGE) Processed ${data.messages.length} history messages, ${sqliteKeyCount} used SQLite-stored encryption keys`);
           setMessages(decryptedMessages.filter(msg => msg.type !== 'handshake'));
           scrollToBottom();
         } else if (
@@ -769,17 +863,17 @@ export default function ChatScreen() {
           (data.sender === receiverId && data.receiver === senderIdState)
         ) {
           if (messageCache.current.has(messageId)) {
-            console.log(`Live message ID: ${data.message_id || 'undefined'} already in cache, skipping`);
+            console.log(`(NOBRIDGE) Live message ID: ${data.message_id || 'undefined'} already in cache, skipping`);
             return;
           }
-          
+
           const { normalizedMsg, keyUsedFromSQLite } = await processMessage(data);
           if (normalizedMsg.type !== 'handshake') {
-            pendingMessagesRef.current.push(normalizedMsg);
+            pendingMessagesRef.current.push({ ...normalizedMsg, __keyUsedFromSQLite: keyUsedFromSQLite });
             setTimeout(() => {
               if (pendingMessagesRef.current.length > 0) {
                 const sqliteKeyCount = pendingMessagesRef.current.reduce((count, msg) => count + (msg.__keyUsedFromSQLite ? 1 : 0), 0);
-                console.log(`Processed ${pendingMessagesRef.current.length} live messages, ${sqliteKeyCount} used SQLite-stored encryption keys`);
+                console.log(`(NOBRIDGE) Processed ${pendingMessagesRef.current.length} live messages, ${sqliteKeyCount} used SQLite-stored encryption keys`);
                 setMessages(prev => [...prev, ...pendingMessagesRef.current.map(msg => {
                   const { __keyUsedFromSQLite, ...cleanMsg } = msg;
                   return cleanMsg;
@@ -788,36 +882,102 @@ export default function ChatScreen() {
                 scrollToBottom();
               }
             }, 100);
-            normalizedMsg.__keyUsedFromSQLite = keyUsedFromSQLite;
           }
         }
       } catch (error) {
-        console.error("(NOBRIDGE) ERROR Parsing WebSocket message:", error);
+        console.error('(NOBRIDGE) ERROR Parsing WebSocket message:', error.message, 'Event:', JSON.stringify(event));
       }
     };
 
     socketRef.current.onerror = (error) => {
-      console.error("(NOBRIDGE) ERROR WebSocket Error:", error.message || error);
-      // Avoid showing alert during reconnection attempts
-      if (reconnectAttemptsRef.current === 0) {
-        Alert.alert('Connection Error', 'Failed to connect to chat server.');
-      }
+      console.error('(NOBRIDGE) ERROR WebSocket error for contact', receiverId, ':', error.message || error);
+      scheduleReconnect();
     };
 
-    socketRef.current.onclose = () => {
-      console.log('WebSocket closed');
+    socketRef.current.onclose = (event) => {
+      console.log('(NOBRIDGE) LOG WebSocket closed for contact', receiverId, ': Code', event.code, 'Reason', event.reason || 'No reason provided');
+      if (pingInterval) {
+        clearInterval(pingInterval);
+        pingInterval = null;
+      }
+      scheduleReconnect();
+    };
+
+    const scheduleReconnect = () => {
       if (reconnectAttemptsRef.current < maxReconnectAttempts) {
         const delay = baseReconnectDelay * Math.pow(2, reconnectAttemptsRef.current);
-        console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttemptsRef.current + 1})`);
-        reconnectTimeoutRef.current = setTimeout(() => {
+        console.log(`(NOBRIDGE) Attempting to reconnect in ${delay}ms (attempt ${reconnectAttemptsRef.current + 1})`);
+        reconnectTimeoutRef.current = setTimeout(async () => {
           reconnectAttemptsRef.current += 1;
+          if (reconnectAttemptsRef.current > 2) {
+            try {
+              const newToken = await refreshAuthToken();
+              if (!newToken) {
+                Alert.alert('Error', 'Session expired. Please log in again.');
+                navigation.reset({
+                  index: 0,
+                  routes: [{ name: 'Login' }],
+                });
+                return;
+              }
+            } catch (error) {
+              console.error('(NOBRIDGE) ERROR Failed to refresh token:', error);
+              Alert.alert('Error', 'Failed to refresh session. Please log in again.');
+              navigation.reset({
+                index: 0,
+                routes: [{ name: 'Login' }],
+              });
+              return;
+            }
+          }
           connectWebSocket();
         }, delay);
       } else {
-        Alert.alert('Connection Closed', 'Unable to reconnect to chat server after multiple attempts.');
+        console.log('(NOBRIDGE) Max reconnection attempts reached for contact', receiverId);
+        Alert.alert('Connection Error', 'Unable to connect to chat server. Falling back to HTTP for history.');
+        fetchChatHistoryViaHttp();
       }
     };
-  }, [token, senderIdState, receiverId, email, navigation, processMessage]);
+  }, [accessToken, senderIdState, receiverId, email, navigation, processMessage, refreshAuthToken]);
+
+  const fetchChatHistoryViaHttp = useCallback(async () => {
+    if (!accessToken) return;
+
+    try {
+      const response = await axios.get(`${API_URL}/chat/messages/?sender=${senderIdState}&receiver=${receiverId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const messages = response.data;
+      console.log('(NOBRIDGE) Fetched chat history via HTTP:', messages.length, 'messages');
+      let sqliteKeyCount = 0;
+      const decryptedMessages = await Promise.all(
+        messages.map(async (msg) => {
+          const { normalizedMsg, keyUsedFromSQLite } = await processMessage(msg, true);
+          if (keyUsedFromSQLite) sqliteKeyCount += 1;
+          return normalizedMsg;
+        })
+      );
+      console.log(`(NOBRIDGE) Processed ${messages.length} HTTP history messages, ${sqliteKeyCount} used SQLite-stored encryption keys`);
+      setMessages(decryptedMessages.filter(msg => msg.type !== 'handshake'));
+      scrollToBottom();
+    } catch (error) {
+      console.error('(NOBRIDGE) ERROR Failed to fetch chat history via HTTP:', error);
+      if (error.response?.status === 401) {
+        const newToken = await refreshAuthToken();
+        if (newToken) {
+          fetchChatHistoryViaHttp();
+        } else {
+          Alert.alert('Error', 'Session expired. Please log in again.');
+          navigation.reset({
+            index: 0,
+            routes: [{ name: 'Login' }],
+          });
+        }
+      } else {
+        Alert.alert('Error', 'Failed to load chat history.');
+      }
+    }
+  }, [senderIdState, receiverId, accessToken, processMessage, refreshAuthToken, navigation]);
 
   const encryptMessage = useCallback(async (plaintext) => {
     const { publicKey, key } = await noiseRef.current.generateMessageKey();
@@ -874,7 +1034,7 @@ export default function ChatScreen() {
       setInputText('');
       scrollToBottom();
     } catch (error) {
-      console.error("(NOBRIDGE) ERROR Failed to send message:", error);
+      console.error('(NOBRIDGE) ERROR Failed to send message:', error);
       Alert.alert('Send Failed', 'Failed to send message: ' + error.message);
     }
   }, [senderIdState, receiverId, inputText, encryptMessage, getNextMessageId, storeMessageKey]);
@@ -910,7 +1070,7 @@ export default function ChatScreen() {
       setPendingFile(null);
       scrollToBottom();
     } catch (error) {
-      console.error("(NOBRIDGE) ERROR Failed to send encrypted file:", error);
+      console.error('(NOBRIDGE) ERROR Failed to send encrypted file:', error);
       Alert.alert('File Send Failed', 'Failed to send file: ' + error.message);
     }
   }, [senderIdState, receiverId, encryptFile, getNextMessageId, storeMessageKey]);
@@ -955,18 +1115,18 @@ export default function ChatScreen() {
           const uint8Array = new Uint8Array(arrayBuffer);
           for (let i = 0; i < binaryString.length; i++) uint8Array[i] = binaryString.charCodeAt(i);
 
-          fileData = { 
-            uri, 
-            fileName: name, 
-            mimeType, 
-            arrayBuffer, 
+          fileData = {
+            uri,
+            fileName: name,
+            mimeType,
+            arrayBuffer,
             fileSize: size || arrayBuffer.byteLength
           };
           setPendingFile(fileData);
         }
       }
     } catch (error) {
-      console.error("(NOBRIDGE) ERROR pickFile Error:", error);
+      console.error('(NOBRIDGE) ERROR pickFile Error:', error);
       Alert.alert('File Pick Failed', 'Failed to pick file: ' + error.message);
     }
   }, []);
@@ -989,7 +1149,7 @@ export default function ChatScreen() {
       size /= 1024;
       unitIndex++;
     }
-    return `\${size.toFixed(2)} \${units[unitIndex]}`;
+    return `${size.toFixed(2)} ${units[unitIndex]}`;
   }, []);
 
   const openFile = useCallback(async (uri) => {
@@ -1000,7 +1160,7 @@ export default function ChatScreen() {
         Alert.alert('File Open Failed', 'Unable to open the file.');
       }
     } catch (error) {
-      console.error("(NOBRIDGE) ERROR Failed to open file:", error);
+      console.error('(NOBRIDGE) ERROR Failed to open file:', error);
       Alert.alert('File Open Failed', 'Failed to open file: ' + error.message);
     }
   }, []);
@@ -1013,7 +1173,7 @@ export default function ChatScreen() {
       let downloadUri = uri;
       let decryptedBytes;
 
-      if (nonce && ephemeralKey) {
+      if (nonce && ephemeralKey && noiseRef.current?.handshakeFinished) {
         const { key } = await noiseRef.current.generateMessageKey(ephemeralKey);
         const response = await fetch(uri);
         if (!response.ok) throw new Error(`Failed to fetch file: ${response.statusText}`);
@@ -1051,19 +1211,10 @@ export default function ChatScreen() {
         const aesCbc = new aesjs.ModeOfOperation.cbc(key, iv);
         decryptedBytes = aesCbc.decrypt(encryptedBytes);
         decryptedBytes = aesjs.padding.pkcs7.strip(decryptedBytes);
-
-        if (Platform.OS === 'web') {
-          const blob = new Blob([decryptedBytes], { type: fileType });
-          downloadUri = URL.createObjectURL(blob);
-        } else {
-          const extension = fileType.startsWith('image/') ? 'jpg' : fileType.startsWith('video/') ? 'mp4' : fileType.startsWith('audio/') ? 'mp3' : fileName.split('.').pop() || 'file';
-          downloadUri = `${FileSystem.documentDirectory || FileSystem.cacheDirectory}downloaded_${Date.now()}.${extension}`;
-          await FileSystem.writeAsStringAsync(downloadUri, Buffer.from(decryptedBytes).toString('base64'), {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-        }
       } else {
         const response = await fetch(uri);
+        if (!response.ok) throw new Error(`Failed to fetch file: ${response.statusText}`);
+
         const contentLength = response.headers.get('content-length');
         const total = contentLength ? parseInt(contentLength, 10) : 0;
         let loaded = 0;
@@ -1089,20 +1240,20 @@ export default function ChatScreen() {
         );
         let offset = 0;
         for (const chunk of chunks) {
-          encryptedBytes.set(chunk, offset);
+          decryptedBytes.set(chunk, offset);
           offset += chunk.length;
         }
+      }
 
-        if (Platform.OS === 'web') {
-          const blob = new Blob([decryptedBytes], { type: fileType });
-          downloadUri = URL.createObjectURL(blob);
-        } else {
-          const extension = fileType.startsWith('image/') ? 'jpg' : fileType.startsWith('video/') ? 'mp4' : fileType.startsWith('audio/') ? 'mp3' : fileName.split('.').pop() || 'file';
-          downloadUri = `${FileSystem.documentDirectory || FileSystem.cacheDirectory}downloaded_${Date.now()}.${extension}`;
-          await FileSystem.writeAsStringAsync(downloadUri, Buffer.from(decryptedBytes).toString('base64'), {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-        }
+      if (Platform.OS === 'web') {
+        const blob = new Blob([decryptedBytes], { type: fileType });
+        downloadUri = URL.createObjectURL(blob);
+      } else {
+        const extension = fileType.startsWith('image/') ? 'jpg' : fileType.startsWith('video/') ? 'mp4' : fileType.startsWith('audio/') ? 'mp3' : fileName.split('.').pop() || 'file';
+        downloadUri = `${FileSystem.documentDirectory || FileSystem.cacheDirectory}downloaded_${Date.now()}.${extension}`;
+        await FileSystem.writeAsStringAsync(downloadUri, Buffer.from(decryptedBytes).toString('base64'), {
+          encoding: FileSystem.EncodingType.Base64,
+        });
       }
 
       setDownloadedFiles((prev) => {
@@ -1123,7 +1274,7 @@ export default function ChatScreen() {
         Alert.alert('File Downloaded', `File saved to ${downloadUri}`);
       }
     } catch (error) {
-      console.error("(NOBRIDGE) ERROR Failed to download file:", error);
+      console.error('(NOBRIDGE) ERROR Failed to download file:', error);
       Alert.alert('Download Failed', 'Failed to download file: ' + error.message);
     } finally {
       setDownloading(prev => {
@@ -1281,7 +1432,7 @@ export default function ChatScreen() {
   }, [senderIdState, friendProfile, contactUsername, downloadedFiles, downloading, downloadProgress, navigation, fadeAnim, wrapText, formatTimestamp, openFilePreview, downloadFile, openFile]);
 
   const getItemLayout = useCallback((data, index) => {
-    const length = 100; // Approximate height of a message
+    const length = 100;
     const offset = length * index;
     return { length, offset, index };
   }, []);
@@ -1350,20 +1501,19 @@ export default function ChatScreen() {
   }, []);
 
   useEffect(() => {
-    if (token && senderIdState && receiverId && email) {
+    if (accessToken && senderIdState && receiverId && email) {
       connectWebSocket();
+      fetchChatHistoryViaHttp();
     }
 
     return () => {
-      // Do not close WebSocket here to maintain connection across screen transitions
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
     };
-  }, [token, senderIdState, receiverId, email, connectWebSocket]);
+  }, [accessToken, senderIdState, receiverId, email, connectWebSocket, fetchChatHistoryViaHttp]);
 
-  // Clean up WebSocket only when component unmounts completely
   useEffect(() => {
     return () => {
       if (socketRef.current) {

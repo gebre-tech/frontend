@@ -1,4 +1,3 @@
-// AuthContext.jsx
 import React, { createContext, useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
@@ -9,9 +8,10 @@ const AuthContext = createContext();
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [keys, setKeys] = useState({ publicKey: '', privateKey: '' });
+  const [accessToken, setAccessToken] = useState(null);
+  const [refreshToken, setRefreshToken] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  
 
   useEffect(() => {
     checkUser();
@@ -19,11 +19,17 @@ export const AuthProvider = ({ children }) => {
 
   const checkUser = async () => {
     try {
-      const token = await AsyncStorage.getItem("token");
+      const [token, refresh] = await Promise.all([
+        AsyncStorage.getItem("token"),
+        AsyncStorage.getItem("refresh"),
+      ]);
       if (!token) {
         setLoading(false);
         return;
       }
+
+      setAccessToken(token);
+      setRefreshToken(refresh);
 
       const res = await axios.get(`${API_URL}/auth/profile/`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -37,9 +43,8 @@ export const AuthProvider = ({ children }) => {
       ]);
       if (privateKey && publicKey) {
         setKeys({ publicKey, privateKey });
-        console.log('succefully get and set Private Key:', privateKey);
-        console.log('succefully get and set Public Key:', publicKey);
-
+        console.log('Successfully get and set Private Key:', privateKey);
+        console.log('Successfully get and set Public Key:', publicKey);
       } else {
         setError("Keys not found on this device. You may need to transfer your private key.");
       }
@@ -47,6 +52,8 @@ export const AuthProvider = ({ children }) => {
       console.log("Auth check failed:", error);
       setUser(null);
       setKeys({ publicKey: '', privateKey: '' });
+      setAccessToken(null);
+      setRefreshToken(null);
     } finally {
       setLoading(false);
     }
@@ -58,9 +65,11 @@ export const AuthProvider = ({ children }) => {
     try {
       const res = await axios.post(`${API_URL}/auth/login/`, { email, password });
       await AsyncStorage.setItem("token", res.data.access);
-      // Store user_email and user_id
+      await AsyncStorage.setItem("refresh", res.data.refresh); // Store refresh token
       await AsyncStorage.setItem("user_email", res.data.user.email);
-      await AsyncStorage.setItem("user_id", res.data.user.id.toString()); // Ensure ID is stored as a string
+      await AsyncStorage.setItem("user_id", res.data.user.id.toString());
+      setAccessToken(res.data.access);
+      setRefreshToken(res.data.refresh);
       setUser(res.data.user);
 
       const [privateKey, publicKey] = await Promise.all([
@@ -72,8 +81,8 @@ export const AuthProvider = ({ children }) => {
 
       if (privateKey && publicKey) {
         setKeys({ publicKey, privateKey });
-        console.log('succefully set Private Key:', privateKey);
-        console.log('succefully set Public Key:', publicKey);
+        console.log('Successfully set Private Key:', privateKey);
+        console.log('Successfully set Public Key:', publicKey);
       } else {
         setError("Keys not found on this device. You may need to transfer your private key.");
       }
@@ -87,7 +96,30 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const logout = async (navigation) => {
+  const refreshAccessToken = async () => {
+    try {
+      const refresh = await AsyncStorage.getItem("refresh");
+      if (!refresh) {
+        throw new Error("No refresh token available");
+      }
+      const res = await axios.post(`${API_URL}/auth/token/refresh/`, { refresh });
+      const newAccessToken = res.data.access;
+      await AsyncStorage.setItem("token", newAccessToken);
+      setAccessToken(newAccessToken);
+      console.log("Successfully refreshed access token");
+      return newAccessToken;
+    } catch (error) {
+      console.error("Token refresh failed:", error);
+      setError("Session expired. Please log in again.");
+      setUser(null);
+      setAccessToken(null);
+      setRefreshToken(null);
+      await AsyncStorage.multiRemove(["token", "refresh", "user_email", "user_id"]);
+      return null;
+    }
+  };
+
+  const logout = async () => {
     setLoading(true);
     try {
       const token = await AsyncStorage.getItem("token");
@@ -103,19 +135,19 @@ export const AuthProvider = ({ children }) => {
         }
       }
 
-      const email = user?.email;
       await AsyncStorage.multiRemove([
         "token",
         "refresh",
         "username",
         "email",
         "profileImage",
-        "user_email", // Add user_email
+        "user_email",
         "user_id",
       ]);
       setUser(null);
       setKeys({ publicKey: '', privateKey: '' });
-
+      setAccessToken(null);
+      setRefreshToken(null);
       return true;
     } catch (error) {
       console.log("Logout error:", error);
@@ -127,7 +159,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, keys, login, logout, loading, error }}>
+    <AuthContext.Provider value={{ user, keys, accessToken, refreshToken: refreshAccessToken, login, logout, loading, error }}>
       {children}
     </AuthContext.Provider>
   );

@@ -34,13 +34,15 @@ export default function ChatStack() {
         name="ChatList" 
         component={ChatList} 
         options={{ 
-          headerShown: false 
+          headerShown: true,
+          title: "Innbox Chat",
         }} 
       />
       <Stack.Screen
         name="ChatScreen"
         component={ChatScreen}
         options={{
+          tabarvisible: false,
           headerShown: false,
         }}
       />
@@ -48,6 +50,7 @@ export default function ChatStack() {
         name="Contacts" 
         component={Contacts} 
         options={{ 
+          tabarvisible: false,
           title: "Contacts",
          // headerShown:false,
           headerLeftContainerStyle: { paddingLeft: 10 },
@@ -66,6 +69,7 @@ export default function ChatStack() {
         name="FriendProfile" 
         component={FriendProfile} 
         options={({ route }) => ({ 
+          tabarvisible: false,
           title: route.params?.username || "Profile",
           headerLeftContainerStyle: { paddingLeft: 10 },
           headerShown: false,

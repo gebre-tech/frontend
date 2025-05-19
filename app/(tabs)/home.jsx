@@ -5,10 +5,11 @@ import { MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import { Dimensions, Text, View, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import CustomDrawerContent from './CustomDrawerContent';
-import TopTabs from './TopTabs';
+
 import AddContacts from './AddContacts';
 import CreateGroupScreen from './CreateGroupScreen';
 import LogoutScreen from '../(auth)/logout';
+import BottomTabs from './BottomTabs';
 
 const Drawer = createDrawerNavigator();
 const { width, height } = Dimensions.get('window');
@@ -83,18 +84,7 @@ export default function Home() {
           ),
         }}
       >
-        <Drawer.Screen
-          name="HomeScreen"
-          component={TopTabs}
-          options={{
-            drawerIcon: ({ color }) => (
-              <View style={styles.iconContainer}>
-                <MaterialCommunityIcons name="home" size={24} color={color} />
-              </View>
-            ),
-            title: 'HabChat',
-          }}
-        />
+
         <Drawer.Screen
           name="AddContacts"
           component={AddContacts}

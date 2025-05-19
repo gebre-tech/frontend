@@ -22,6 +22,24 @@ import { API_URL, API_HOST, PLACEHOLDER_IMAGE } from '../utils/constants';
 import ChatScreen from './chatScreen';
 import FriendProfile from './FriendProfile';
 
+// COLORS object to match AddContactsScreen
+const COLORS = {
+  primary: '#1e88e5',
+  secondary: '#6b7280',
+  background: '#ffffff',
+  cardBackground: '#f9fafb',
+  white: '#ffffff',
+  error: '#ef4444',
+  disabled: '#d1d5db',
+  border: '#e5e7eb',
+  text: '#111827',
+  accent: '#f472b6',
+  shadow: 'rgba(0, 0, 0, 0.05)',
+  green: '#078930',
+  yellow: '#FCDD09',
+  red: '#DA121A',
+};
+
 const Stack = createStackNavigator();
 
 const ContactsScreen = ({ navigation }) => {
@@ -323,9 +341,22 @@ const ContactsScreen = ({ navigation }) => {
         <ActivityIndicator size="large" color="#007AFF" style={tw`flex-1 justify-center`} />
       ) : (
         <View style={tw`flex-1`}>
-          <Text style={tw`px-4 py-2 text-lg font-semibold text-gray-800`}>
-            Contacts ({contacts.length})
-          </Text>
+          <View style={tw`flex-row items-start px-4 py-2`}>
+            <Text style={tw`text-lg font-semibold text-gray-800 flex-1`}>
+              Contacts ({contacts.length})
+            </Text>
+            <View style={tw`flex-col items-center`}>
+              <TouchableOpacity
+                style={tw`w-10 h-10 bg-[${COLORS.primary}] rounded-full items-center justify-center shadow-sm`}
+                onPress={() => parentNavigation.navigate('AddContacts')}
+                accessibilityLabel="Add new contact"
+                accessibilityRole="button"
+              >
+                <Ionicons name="add" size={28} color={COLORS.white} />
+              </TouchableOpacity>
+              <Text style={tw`text-xs text-gray-600 mt-1`}>Add Contact</Text>
+            </View>
+          </View>
           <FlatList
             data={contacts}
             renderItem={renderItem}

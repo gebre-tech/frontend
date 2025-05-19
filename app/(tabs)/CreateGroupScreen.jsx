@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Image,
-  StyleSheet,
   Text,
   TextInput,
   FlatList,
@@ -17,13 +16,32 @@ import tw from 'twrnc';
 import { API_URL } from '../utils/constants';
 import { useNavigation } from '@react-navigation/native';
 
+// COLORS object to match Groups.js and ContactsScreen.js
+const COLORS = {
+  primary: '#1e88e5',
+  secondary: '#6b7280',
+  background: '#ffffff',
+  cardBackground: '#f9fafb',
+  white: '#ffffff',
+  error: '#ef4444',
+  disabled: '#d1d5db',
+  border: '#e5e7eb',
+  text: '#111827',
+  accent: '#f472b6',
+  shadow: 'rgba(0, 0, 0, 0.05)',
+  green: '#078930',
+  yellow: '#FCDD09',
+  red: '#DA121A',
+};
+
 const CreateGroupScreen = () => {
   const [groupName, setGroupName] = useState('');
   const [contacts, setContacts] = useState([]);
-  const [contactProfiles, setContactProfiles] = useState({}); // New state for contact profiles
+  const [contactProfiles, setContactProfiles] = useState({});
   const [selectedMembers, setSelectedMembers] = useState([]);
   const [loading, setLoading] = useState(false);
   const navigation = useNavigation();
+  const inputRef = useRef(null);
 
   const fetchContacts = useCallback(async () => {
     try {
@@ -36,7 +54,6 @@ const CreateGroupScreen = () => {
       const contactsData = response.data || [];
       setContacts(contactsData);
 
-      // Fetch profile data for each contact
       const profiles = {};
       for (const contact of contactsData) {
         try {
@@ -102,6 +119,11 @@ const CreateGroupScreen = () => {
     Alert.alert('Error', error.response?.data?.error || error.message || 'An error occurred');
   };
 
+  const clearInput = () => {
+    setGroupName('');
+    inputRef.current?.focus();
+  };
+
   useEffect(() => {
     fetchContacts();
   }, [fetchContacts]);
@@ -145,16 +167,27 @@ const CreateGroupScreen = () => {
   return (
     <View style={tw`flex-1 bg-gray-100`}>
       <View style={tw`p-4`}>
-        <TextInput
-          style={tw`bg-white rounded-full px-4 py-2 text-gray-800 border border-gray-200 shadow-sm`}
-          placeholder="Group name..."
-          placeholderTextColor="#9CA3AF"
-          value={groupName}
-          onChangeText={setGroupName}
-        />
+        <Text style={tw`text-lg font-semibold text-[${COLORS.text}] mb-2`}>Group Name</Text>
+        <View style={tw`flex-row items-center bg-[${COLORS.background}] rounded-xl border border-[${COLORS.border}] shadow-sm px-4 py-3`}>
+          <TextInput
+            ref={inputRef}
+            style={tw`flex-1 text-lg font-medium text-[${COLORS.text}]`}
+            placeholder="Enter group name..."
+            placeholderTextColor={COLORS.secondary}
+            value={groupName}
+            onChangeText={setGroupName}
+            autoFocus={true}
+            autoCapitalize="words"
+          />
+          {groupName.length > 0 && (
+            <TouchableOpacity onPress={clearInput} accessibilityLabel="Clear group name">
+              <Ionicons name="close-circle" size={20} color={COLORS.secondary} />
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
       {loading ? (
-        <ActivityIndicator size="large" color="#007AFF" style={tw`flex-1 justify-center`} />
+        <ActivityIndicator size="large" color={COLORS.primary} style={tw`flex-1 justify-center`} />
       ) : (
         <FlatList
           data={contacts}
@@ -165,7 +198,7 @@ const CreateGroupScreen = () => {
         />
       )}
       <TouchableOpacity
-        style={tw`bg-blue-500 m-4 p-4 rounded-lg`}
+        style={tw`bg-[${COLORS.primary}] m-4 p-4 rounded-lg`}
         onPress={createGroup}
         disabled={loading}
       >

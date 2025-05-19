@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
+  Animated,
 } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -17,6 +18,23 @@ import Toast from 'react-native-toast-message';
 import { API_HOST, API_URL } from '../utils/constants';
 import { AuthContext } from '../../context/AuthContext';
 
+const COLORS = {
+  primary: '#1e88e5',
+  secondary: '#6b7280',
+  background: '#ffffff',
+  cardBackground: '#f9fafb',
+  white: '#ffffff',
+  error: '#ef4444',
+  disabled: '#d1d5db',
+  border: '#e5e7eb',
+  text: '#111827',
+  accent: '#f472b6',
+  shadow: 'rgba(0, 0, 0, 0.05)',
+  green: '#078930',
+  yellow: '#FCDD09',
+  red: '#DA121A',
+};
+
 const Groups = () => {
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -26,10 +44,10 @@ const Groups = () => {
   const navigation = useNavigation();
   const { user } = React.useContext(AuthContext);
   const ws = useRef(null);
+  const scaleAnim = useState(new Animated.Value(1))[0]; // Animation for "+" icon
 
   const processGroupProfilePicture = (profilePicture) => {
     if (!profilePicture) return null;
-    // Ensure absolute URL
     return profilePicture.startsWith('http') ? profilePicture : `${API_URL}${profilePicture}`;
   };
 
@@ -174,7 +192,7 @@ const Groups = () => {
           setUnreadCounts((prev) => {
             const newCounts = { ...prev };
             delete newCounts[data.group_id];
-            return newCounts;
+            return newMessages;
           });
           Toast.show({
             type: 'info',
@@ -218,8 +236,27 @@ const Groups = () => {
       text1: 'Error',
       text2: error.response?.data?.error || error.message || 'An error occurred',
       position: 'bottom',
-      position: 'bottom',
     });
+  };
+
+  // Animation for "+" icon press
+  const handleIconPressIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.9,
+      friction: 5,
+      tension: 40,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const handleIconPressOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      friction: 5,
+      tension: 40,
+      useNativeDriver: true,
+    }).start();
+    navigation.navigate('CreateGroup');
   };
 
   useEffect(() => {
@@ -303,40 +340,53 @@ const Groups = () => {
 
   return (
     <View style={tw`flex-1 bg-gray-100`}>
-      <View style={tw`bg-[#1a73e8] p-4 pt-10 flex-row items-center justify-between`}>
-        <Text style={tw`text-2xl font-bold text-white`}>Groups</Text>
-        <TouchableOpacity
-          onPress={() => navigation.navigate('CreateGroup')}
-          style={tw`p-2`}
-        >
-          <Ionicons name="add-circle" size={28} color="white" />
-        </TouchableOpacity>
-      </View>
-
-      <View style={tw`p-4 bg-white shadow-md rounded-b-2xl`}>
-        <View style={tw`flex-row items-center bg-gray-100 rounded-full px-3 py-2`}>
+      <View style={tw`p-4`}>
+        <View style={tw`flex-row items-center bg-white rounded-full px-3 py-2 border border-gray-200 shadow-sm`}>
           <Ionicons name="search" size={20} color="#9CA3AF" />
           <TextInput
             style={tw`flex-1 ml-2 text-base text-gray-800`}
             placeholder="Search groups..."
+            placeholderTextColor="#9CA3AF"
             value={searchText}
             onChangeText={setSearchText}
+            autoCapitalize="none"
           />
         </View>
       </View>
-
       {loading ? (
-        <ActivityIndicator size="large" color="#007AFF" style={tw`flex-1 justify-center`} />
+        <ActivityIndicator size="large" color={COLORS.primary} style={tw`flex-1 justify-center`} />
       ) : (
-        <FlatList
-          data={groups}
-          renderItem={renderGroup}
-          keyExtractor={(item) => item.id.toString()}
-          ListEmptyComponent={
-            <Text style={tw`text-center mt-5 text-gray-500`}>No groups found</Text>
-          }
-          contentContainerStyle={tw`pb-4`}
-        />
+        <View style={tw`flex-1`}>
+          <View style={tw`flex-row items-start px-4 py-2`}>
+            <Text style={tw`text-lg font-semibold text-gray-800 flex-1`}>
+              Groups ({groups.length})
+            </Text>
+            <View style={tw`flex-col items-center`}>
+              <TouchableOpacity
+                style={tw`w-10 h-10 bg-[${COLORS.primary}] rounded-full items-center justify-center shadow-sm`}
+                onPressIn={handleIconPressIn}
+                onPressOut={handleIconPressOut}
+                accessibilityLabel="Create new group"
+                accessibilityRole="button"
+                activeOpacity={0.8}
+              >
+                <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+                  <Ionicons name="add" size={28} color={COLORS.white} />
+                </Animated.View>
+              </TouchableOpacity>
+              <Text style={tw`text-xs text-gray-600 mt-1`}>Create Group</Text>
+            </View>
+          </View>
+          <FlatList
+            data={groups}
+            renderItem={renderGroup}
+            keyExtractor={(item) => item.id.toString()}
+            ListEmptyComponent={
+              <Text style={tw`text-center mt-5 text-gray-500`}>No groups found</Text>
+            }
+            contentContainerStyle={tw`pb-4`}
+          />
+        </View>
       )}
     </View>
   );

@@ -22,6 +22,24 @@ import FriendProfile from './FriendProfile';
 // Create a Stack Navigator
 const Stack = createNativeStackNavigator();
 
+// COLORS object to match RootNavigator, BottomTabs, and Groups
+const COLORS = {
+  primary: '#1e88e5',
+  secondary: '#6b7280',
+  background: '#ffffff',
+  cardBackground: '#f9fafb',
+  white: '#ffffff',
+  error: '#ef4444',
+  disabled: '#d1d5db',
+  border: '#e5e7eb',
+  text: '#111827',
+  accent: '#f472b6',
+  shadow: 'rgba(0, 0, 0, 0.05)',
+  green: '#078930',
+  yellow: '#FCDD09',
+  red: '#DA121A',
+};
+
 // Simple fuzzy matching function
 const simpleFuzzyScore = (text, query) => {
   text = text.toLowerCase();
@@ -417,7 +435,7 @@ const AddContactsScreen = () => {
 
     const isDisabled = loading || item.is_friend || item.has_pending_request || pendingRequests.has(item.username);
     const iconName = item.is_friend ? 'checkmark-circle' : item.has_pending_request ? 'hourglass-outline' : 'person-add-outline';
-    const iconColor = item.is_friend ? '#28a745' : item.has_pending_request ? '#ffa500' : isDisabled ? '#ccc' : '#007bff';
+    const iconColor = item.is_friend ? COLORS.green : item.has_pending_request ? COLORS.yellow : isDisabled ? COLORS.disabled : COLORS.primary;
 
     return (
       <View style={styles.suggestionItem}>
@@ -493,10 +511,6 @@ const AddContactsScreen = () => {
   return (
     <View style={styles.outerContainer}>
       <View style={styles.container}>
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={28} color="#007bff" />
-        </TouchableOpacity>
-
         {notification && (
           <Animated.View
             style={[
@@ -509,7 +523,7 @@ const AddContactsScreen = () => {
           >
             <Text style={styles.notificationText}>{notification}</Text>
             <TouchableOpacity onPress={clearNotification}>
-              <Ionicons name="close" size={20} color="#007bff" />
+              <Ionicons name="close" size={20} color={COLORS.primary} />
             </TouchableOpacity>
           </Animated.View>
         )}
@@ -521,12 +535,12 @@ const AddContactsScreen = () => {
           ]}
         >
           <View style={[styles.inputContainer, error && styles.inputError]}>
-            <Ionicons name="search-outline" size={24} color="#888" style={styles.inputIcon} />
+            <Ionicons name="search-outline" size={24} color={COLORS.secondary} style={styles.inputIcon} />
             <TextInput
               ref={inputRef}
               style={[styles.input, isFocused && styles.inputFocused]}
               placeholder="Search by name or username..."
-              placeholderTextColor="#aaa"
+              placeholderTextColor={COLORS.secondary}
               value={friendQuery}
               onChangeText={validateInput}
               onFocus={() => setIsFocused(true)}
@@ -538,13 +552,13 @@ const AddContactsScreen = () => {
             />
             {friendQuery.length > 0 && (
               <TouchableOpacity onPress={() => setFriendQuery('')} style={styles.clearIcon}>
-                <Ionicons name="close-circle" size={20} color="#888" />
+                <Ionicons name="close-circle" size={20} color={COLORS.secondary} />
               </TouchableOpacity>
             )}
           </View>
           {loading && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="small" color="#007bff" />
+              <ActivityIndicator size="small" color={COLORS.primary} />
             </View>
           )}
           {suggestions.length > 0 && !error && (
@@ -579,29 +593,23 @@ export default AddContactsNavigator;
 const styles = StyleSheet.create({
   outerContainer: {
     flex: 1,
-    backgroundColor: '#f5f6fa',
+    backgroundColor: COLORS.background, // White background to match app
   },
   container: {
     flex: 1,
     padding: 24,
     justifyContent: 'flex-start',
   },
-  backButton: {
-    position: 'absolute',
-    top: 24,
-    left: 24,
-    zIndex: 1000,
-  },
   notificationContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: COLORS.cardBackground,
     padding: 12,
-    borderRadius: 8,
-    marginTop: 70,
+    borderRadius: 12,
+    marginTop: 24,
     marginBottom: 10,
-    shadowColor: '#000',
+    shadowColor: COLORS.shadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
@@ -609,22 +617,22 @@ const styles = StyleSheet.create({
   },
   notificationText: {
     fontSize: 14,
-    color: '#333',
+    color: COLORS.text,
     flex: 1,
     marginRight: 10,
   },
   inputWrapper: {
     width: '100%',
-    marginTop: 60,
+    marginTop: 24,
   },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: COLORS.white,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#e5e5e5',
-    shadowColor: '#000',
+    borderColor: COLORS.border,
+    shadowColor: COLORS.shadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
@@ -638,30 +646,30 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 12,
     fontSize: 16,
-    color: '#333',
+    color: COLORS.text,
   },
   inputFocused: {
-    borderColor: '#ff0000', // Changed to red
+    borderColor: COLORS.primary, // Blue focus to match app
   },
   inputError: {
-    borderColor: '#ff4d4d',
+    borderColor: COLORS.error,
   },
   clearIcon: {
     marginRight: 12,
   },
   errorText: {
-    color: '#ff4d4d',
+    color: COLORS.error,
     fontSize: 14,
     textAlign: 'center',
     marginTop: 10,
   },
   suggestionsContainer: {
-    backgroundColor: '#fff',
+    backgroundColor: COLORS.white,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#e5e5e5',
+    borderColor: COLORS.border,
     marginTop: 8,
-    shadowColor: '#000',
+    shadowColor: COLORS.shadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
@@ -674,7 +682,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: COLORS.border,
   },
   suggestionContent: {
     flexDirection: 'row',
@@ -689,7 +697,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#e5e5e5',
+    backgroundColor: COLORS.border,
   },
   onlineIndicator: {
     position: 'absolute',
@@ -697,10 +705,10 @@ const styles = StyleSheet.create({
     right: 0,
     width: 12,
     height: 12,
-    backgroundColor: '#28a745',
+    backgroundColor: COLORS.green,
     borderRadius: 6,
     borderWidth: 2,
-    borderColor: '#fff',
+    borderColor: COLORS.white,
   },
   suggestionTextContainer: {
     flex: 1,
@@ -708,11 +716,11 @@ const styles = StyleSheet.create({
   suggestionName: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#333',
+    color: COLORS.text,
   },
   suggestionUsername: {
     fontSize: 14,
-    color: '#777',
+    color: COLORS.secondary,
   },
   sendIconContainer: {
     padding: 8,

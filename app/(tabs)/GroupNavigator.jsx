@@ -16,11 +16,42 @@ const GroupsNavigator = () => {
         headerShown: false,
       }}
     >
-      <Stack.Screen name="Groups" component={Groups} />
-      <Stack.Screen name="CreateGroup" component={CreateGroupScreen} />
-      <Stack.Screen name="GroupChatScreen" component={GroupChatScreen} />
-      <Stack.Screen name="GroupInfo" component={GroupInfo} />
-      <Stack.Screen name="FriendProfile" component={FriendProfile} />
+      <Stack.Screen
+        name="Groups"
+        component={Groups}
+        options={{
+          tabBarVisible: true,
+        }}
+      />
+      <Stack.Screen
+        name="CreateGroup"
+        component={CreateGroupScreen}
+        options={{
+          tabBarVisible: false,
+          headerShown: true,
+        }}
+      />
+      <Stack.Screen
+        name="GroupChatScreen"
+        component={GroupChatScreen}
+        options={{
+          tabBarVisible: false,
+        }}
+      />
+      <Stack.Screen
+        name="GroupInfo"
+        component={GroupInfo}
+        options={{
+          tabBarVisible: false,
+        }}
+      />
+      <Stack.Screen
+        name="FriendProfile"
+        component={FriendProfile}
+        options={{
+          tabBarVisible: false,
+        }}
+      />
     </Stack.Navigator>
   );
 };

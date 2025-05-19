@@ -4,8 +4,10 @@ import { AuthContext } from "../context/AuthContext";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useNavigation } from "@react-navigation/native";
 import Login from "./(auth)/login";
-import Home from "./(tabs)/home";
+import Home from "./(tabs)/BottomTabs";
 import Signup from "./(auth)/signup";
+import BottomTabs from "./(tabs)/BottomTabs";
+import RootNavigator from "./(tabs)/RootNavigator";
 
 const Stack = createNativeStackNavigator();
 
@@ -20,7 +22,7 @@ const Authenticated = () => {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       {user ? (
-        <Stack.Screen name="Home" component={Home} />
+        <Stack.Screen name="Home" component={RootNavigator} />
       ) : (
         <>
           <Stack.Screen name="Login" component={Login} />
